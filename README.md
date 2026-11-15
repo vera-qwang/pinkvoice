@@ -44,13 +44,18 @@
 
 ## 下载
 
-| 版本 | 说明 |
-|---|---|
-| [Releases](https://github.com/vera-qwang/pinkvoice/releases) | 正式版本（带标签的 Release）和滚动更新的 `latest` 预发布，APK 直接下载 |
-| [Actions 构建](https://github.com/vera-qwang/pinkvoice/actions) | 每次提交的自动构建，APK 作为 artifact 可下载 |
+**[⬇ 下载 APK](https://github.com/vera-qwang/pinkvoice/releases/latest)**
 
-APK 需要 Android 8.0（API 26）及以上。直接装 APK 需要在系统里允许
-「安装未知来源应用」。
+去 [Releases](https://github.com/vera-qwang/pinkvoice/releases) 页面下载最新的
+`pinkvoice-<版本>.apk` 就行。也可以直接点上面的按钮。
+
+- 需要 Android 8.0（API 26）及以上
+- 首次安装要在系统里允许「安装未知来源应用」
+- 正式版用项目自己的密钥签名（`CN=PinkVoice`），**升级时请用同一个来源的 APK**——
+  换了签名系统就不让覆盖安装，只能卸载重装（App 数据会丢）
+
+自己构建的话，[Actions](https://github.com/vera-qwang/pinkvoice/actions) 里
+每次提交的 APK 也作为 artifact 保留着。
 
 ## 快速开始
 

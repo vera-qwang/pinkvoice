@@ -182,11 +182,11 @@
 
 ## P4 · 仓库运维
 
-- [x] CI 自动发布带 APK 的 Release
-      （推标签 `v*` → 正式版；推 main → 滚动 `latest` 预发布）
-- [ ] 配正式签名密钥（目前用仓库内的 debug keystore 兜底，
-      secrets：`PINKVOICE_KEYSTORE_BASE64` / `PINKVOICE_STORE_PASSWORD` /
-      `PINKVOICE_KEY_ALIAS` / `PINKVOICE_KEY_PASSWORD`）
+- [x] CI 自动发布带 APK 的 Release（只在推标签 `v*` 时触发）
+- [x] 正式签名密钥已配好（`CN=PinkVoice`），v0.1.0 已用正式签名发布并验证
+      - keystore 备份在 `.release-secrets/`（已 gitignore）
+      - 配置脚本：`scripts/setup-release-secrets.sh`
+      - 验证脚本：`scripts/verify-apk-signing.sh`
 - [ ] 仓库描述与 topics（文案在 `.github/repo-metadata.md`）
 - [ ] 设置 Issues / Discussions 标签
 - [ ] README 的中英双语切换（当前只有中文）
