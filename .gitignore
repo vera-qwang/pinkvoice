@@ -21,3 +21,6 @@ local.properties
 # 本地发布签名密钥（正式密钥通过 CI secrets 注入，绝不能提交）
 release.keystore
 *.jks
+
+# 本地发布签名密钥（绝不能提交）
+.release-secrets/
