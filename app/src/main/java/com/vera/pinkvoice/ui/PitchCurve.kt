@@ -138,19 +138,24 @@ fun PitchCurve(
             drawBands(textMeasurer, plotLeft, plotWidth, size.height, fMin, fMax, palette)
 
             // 半音网格：每半音一条淡线，看得出当前唱在哪个音级。
-            // 落在音域色带里的线要更淡，否则网格会盖住色带本身。
+            //
+            // 强度只有两档：八度线明显一点，半音线更淡。
+            //
+            // 早先还分"在音域色带里 / 不在"两档，现在去掉了——色带改成
+            // **整片铺满**之后（分界线以下全是男声区，以上全是女声区），
+            // 整个绘图区都在色带上，没有"带外"这个概念了。而且那两档
+            // 的差距太大（八度线 1.0 vs 0.55，半音线 0.45 vs 0.18），
+            // 一滑到色带边界外，整片网格线会突然变亮，看着像有一道白线。
+            //
+            // 另外注意 palette.grid 现在是**不透明**色：这里用
+            // copy(alpha = ...) 调强度才准。早先它自带 8%/10% 的 alpha，
+            // 被 copy(alpha = 1f) 整个替换掉，八度线就成了 100% 纯黑/纯白。
             for (midi in midiRange(fMin, fMax)) {
                 val hz = PitchMath.midiToHz(midi).toFloat()
                 val y = yFor(hz, size.height, fMin, fMax)
                 val isOctave = midi % 12 == 0
-                val inBand = hz in MaleRange || hz in FemaleRange
-                val alpha = when {
-                    isOctave -> if (inBand) 0.55f else 1f
-                    inBand -> 0.18f
-                    else -> 0.45f
-                }
                 drawLine(
-                    color = palette.grid.copy(alpha = alpha),
+                    color = palette.grid.copy(alpha = if (isOctave) 0.55f else 0.18f),
                     start = Offset(plotLeft, y),
                     end = Offset(plotRight, y),
                     strokeWidth = if (isOctave) 1.4f else 1f,

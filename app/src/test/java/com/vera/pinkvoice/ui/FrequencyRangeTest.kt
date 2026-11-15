@@ -176,9 +176,9 @@ class BandLabelPositionTest {
     private val labelHeight = 30f
     private val gap = 11f
 
-    /** 分界线在 147 Hz 上。 */
+    /** 分界线在 E3（164.81 Hz）上。 */
     private fun splitY(fMin: Float, fMax: Float) =
-        yFor(147f, height, fMin, fMax)
+        yFor(BandBoundaryHz, height, fMin, fMax)
 
     /** 视野横跨分界线时，两个标签都该有。 */
     @Test
@@ -191,7 +191,7 @@ class BandLabelPositionTest {
     /** 视野完全在女声区 → 只有女声标签。 */
     @Test
     fun onlyFemaleLabelWhenRangeAboveBoundary() {
-        val split = splitY(200f, 400f)
+        val split = splitY(200f, 400f)   // 都在 164.81 以上
         assertTrue(
             "女声标签应该在",
             bandLabelY(true, 200f, 400f, split, height, labelHeight, gap) != null,
@@ -225,11 +225,11 @@ class BandLabelPositionTest {
             40f to 80f,
             60f to 100f,
             80f to 270f,
-            147f to 255f,
+            164.81f to 255f,
             200f to 500f,
             296f to 1000f,
-            82f to 147f,
-            140f to 150f,
+            82f to 164.81f,
+            160f to 170f,
         )
         for ((lo, hi) in ranges) {
             val split = splitY(lo, hi)

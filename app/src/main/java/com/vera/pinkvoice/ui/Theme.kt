@@ -62,21 +62,25 @@ enum class ThemeMode(val storageKey: String) {
  * 2. 音名着色按"先判男声区"的规则走，于是 165–180 的音名（E3/F3）
  *    显示成蓝色，可它们明明画在粉色带上，看着别扭。
  *
- * **分界点定在 147 Hz（D3）**，而不是随手取个整数。两个原因：
+ * **分界点定在 164.81 Hz（E3）**。
  *
- * - **视觉平衡**：频率轴是对数轴，色带的"大小"看的是比值不是差值。
- *   分界在 165 时男声区跨 85→165（1.94 倍），女声区跨 165→255（1.55 倍），
- *   男声区在对数轴上占 60%、女声区只占 40%——蓝色块明显更大。
- *   分界挪到 √(85×255) ≈ 147 Hz（几何中点）后，两区的对数跨度
- *   基本相等（48% vs 45%），视觉上才是"两个差不多大的色带"。
- * - **落在整音上**：147 Hz 正好是 D3，音名标注不会出现
- *   "D3 蓝、E3 粉"这种看起来像错位的跳变。
+ * 早先定在 147 Hz（D3，85×255 的几何中点），是为了让男女声两个色带
+ * 在对数轴上差不多大。但实际用下来，男声的音域比按几何中点算的要高——
+ * 变声期往上走之后，基频落在 D3 附近的男声其实不多，分界偏低会
+ * 让蓝区显得"总是偏大"。抬到 E3 之后更贴合实际音高分布。
+ *
+ * 代价是蓝色块在对数轴上占 62%、粉色占 38%——不再是对称的。
+ *
+ * 147 → 165 时女声区只有 1.55 倍宽（164.81→255），比男声区窄不少，
+ * 但女声区的音高本来就集中在这一段，视觉上不亏。
+ *
+ * E3 正好是整音，音名标注不会出现"蓝一半粉一半"的错位跳变。
  */
-val MaleRange = 82f..147f
-val FemaleRange = 147f..255f
+val MaleRange = 82f..164.81f
+val FemaleRange = 164.81f..255f
 
 /** 两个音域的分界点（Hz）。上界归女声，下界归男声。 */
-val BandBoundaryHz = 147f
+val BandBoundaryHz = 164.81f
 
 /**
  * 声学相关的语义色。深浅色主题下取值不同，所以单独抽出来，
@@ -86,6 +90,14 @@ data class VoicePalette(
     val maleBand: Color,
     val femaleBand: Color,
     val trace: Color,
+    /**
+     * 网格线颜色。
+     *
+     * **不透明**——强度完全由绘制时的 alpha 控制。
+     * 早先这里写的是半透明色（浅色 8% 黑、深色 10% 白），绘制时又用
+     * `copy(alpha = ...)` 调，结果那个 alpha 被整个替换掉：
+     * 深色主题的八度线变成 100% 纯白，浅色主题变成 100% 纯黑。
+     */
     val grid: Color,
     val axisLabel: Color,
     val inTune: Color,
@@ -110,7 +122,7 @@ private val LightPalette = VoicePalette(
     maleBand = BrandBlue.copy(alpha = 0.24f),
     femaleBand = BrandPink.copy(alpha = 0.30f),
     trace = BrandPinkInk,
-    grid = Color(0x140F1115),
+    grid = Color(0xFF0F1115),
     axisLabel = Color(0x9E11161C),
     inTune = Color(0xFF0E9F5E),
     nearTune = Color(0xFFC2410C),
@@ -129,7 +141,7 @@ private val DarkPalette = VoicePalette(
     maleBand = BrandBlue.copy(alpha = 0.18f),
     femaleBand = BrandPink.copy(alpha = 0.20f),
     trace = BrandPinkSoft,
-    grid = Color(0x1AFFFFFF),
+    grid = Color(0xFFFFFFFF),
     axisLabel = Color(0x8CFFFFFF),
     inTune = Color(0xFF32D583),
     nearTune = Color(0xFFFDB022),

@@ -90,6 +90,26 @@ android {
         compose = true
     }
 
+    // debug 版给一个比任何 release 都大的 versionCode。
+    //
+    // release 用的是 yyMMddHH（`date +%y%m%d%H`），最大能到 99123123；
+    // 这里从 1 亿起，保证永远比 release 新。
+    //
+    // 不设的话，装过 release 版之后再装 debug 会被系统拒掉：
+    //   INSTALL_FAILED_VERSION_DOWNGRADE: version code 1 is older
+    //   than current 26111514
+    // 只能先卸载重装，而卸载会丢 App 数据——调试时很烦，
+    // 而且会让人误以为"改了代码但没生效"（其实装的是旧的 release）。
+    androidComponents {
+        onVariants { variant ->
+            if (variant.buildType == "debug") {
+                variant.outputs.forEach { output ->
+                    output.versionCode.set(100_000_000)
+                }
+            }
+        }
+    }
+
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
