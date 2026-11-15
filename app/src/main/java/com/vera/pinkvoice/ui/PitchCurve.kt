@@ -1,14 +1,18 @@
 package com.vera.pinkvoice.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.CompositingStrategy
@@ -52,8 +56,10 @@ fun PitchCurve(
     offsetMs: Long,
     modifier: Modifier = Modifier,
     windowMs: Long = CURVE_WINDOW_MS,
-    fMin: Float = 80f,
-    fMax: Float = 270f,
+    /**
+     * 频率轴的可见范围。用户可以上下滑动平移、双指缩放来调整它。
+     */
+    range: FrequencyRange,
     textMeasurer: TextMeasurer,
     active: Boolean = true,
     /**
@@ -88,13 +94,31 @@ fun PitchCurve(
 
     val palette = LocalVoicePalette.current
 
+    // 绘图区高度。手势回调里拿不到 DrawScope 的尺寸，
+    // 所以在这里记一份——平移时要用它换算"拖 1 像素 = 多少频率"。
+    val plotHeight = remember { mutableIntStateOf(0) }
+
+    // 上下滑动 = 平移可见频率范围；双指捏合 = 缩放。
+    //
+    // 用 transformable 而不是手写 pointerInput：它已经处理好了
+    // 双指、锚点（捏合时以两指中点为中心）和防抖。
+    val transformState = rememberTransformableState { zoomChange, panChange, _ ->
+        range.zoom(zoomChange)
+        // panChange 是 Offset，这里只取纵向分量（横向平移对频率轴没意义）
+        range.pan(panChange.y, plotHeight.intValue.toFloat())
+    }
+
     // 复用缓冲，避免每帧分配（remember 必须在 composable 层，不能放进 DrawScope）
     val outT = remember { LongArray(4096) }
     val outHz = remember { FloatArray(4096) }
     val outClarity = remember { FloatArray(4096) }
     val outRms = remember { FloatArray(4096) }
 
-    Box(modifier) {
+    Box(
+        modifier
+            .transformable(transformState)
+            .onSizeChanged { plotHeight.intValue = it.height },
+    ) {
         // ---- 静态层：音域色带 / 半音辅助线 / 音名 + 频率 ----
         // 不读 tick，因此只在自身参数变化时才重绘。
         // 再用 graphicsLayer 把它提升成独立硬件层：内容不变时合成器直接复用
@@ -104,6 +128,10 @@ fun PitchCurve(
                 .fillMaxSize()
                 .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen),
         ) {
+            // 范围在**绘制时**读取（而不是作为参数传进来）：
+            // 这样滑动只触发重绘，不会引起重组。
+            val fMin = range.min
+            val fMax = range.max
             val plotLeft = LEFT_AXIS_DP.toPx()
             val plotRight = (size.width - RIGHT_AXIS_DP.toPx()).coerceAtLeast(plotLeft + 1f)
             val plotWidth = plotRight - plotLeft
@@ -144,10 +172,11 @@ fun PitchCurve(
                 val color = bandColorOf(hz.toFloat(), palette)
                 val isOctave = midi % 12 == 0
 
-                drawText(
+                drawLabel(
                     textMeasurer = textMeasurer,
                     text = PitchMath.midiToName(midi),
-                    topLeft = Offset(0f, y - 7f),
+                    x = 0f,
+                    y = y - 7f,
                     style = TextStyle(
                         fontSize = 10.sp,
                         color = color,
@@ -160,10 +189,11 @@ fun PitchCurve(
                     hzText,
                     TextStyle(fontSize = 9.sp, color = palette.axisLabel),
                 ).size
-                drawText(
+                drawLabel(
                     textMeasurer = textMeasurer,
                     text = hzText,
-                    topLeft = Offset(size.width - hzSize.width, y - 6.5f),
+                    x = size.width - hzSize.width,
+                    y = y - 6.5f,
                     style = TextStyle(fontSize = 9.sp, color = palette.axisLabel),
                 )
             }
@@ -175,6 +205,8 @@ fun PitchCurve(
             @Suppress("UNUSED_EXPRESSION")
             tick.longValue
 
+            val fMin = range.min
+            val fMax = range.max
             val w = size.width
             val h = size.height
             val plotLeft = LEFT_AXIS_DP.toPx()
@@ -267,6 +299,28 @@ fun PitchCurve(
     }
 }
 
+/**
+ * 音域标签的纵向位置。
+ *
+ * @param bandStart 音域下限（Hz）
+ * @param bandEnd   音域上限（Hz）
+ * @return 标签的 y 坐标；音域完全不在可见范围内时返回 null（不画标签）
+ */
+internal fun bandLabelY(
+    bandStart: Float,
+    bandEnd: Float,
+    fMin: Float,
+    fMax: Float,
+    height: Float,
+): Float? {
+    // 只画和可见范围有交集的那一段
+    val visStart = maxOf(fMin, bandStart)
+    val visEnd = minOf(fMax, bandEnd)
+    if (visEnd <= visStart) return null
+    // 交集的高频端在上方
+    return yFor(visEnd, height, fMin, fMax)
+}
+
 private fun DrawScope.drawBands(
     textMeasurer: TextMeasurer,
     left: Float,
@@ -292,25 +346,60 @@ private fun DrawScope.drawBands(
         topLeft = Offset(left, maleTop),
         size = Size(width, maleBottom - maleTop),
     )
+    // 标签只在音域**可见**时画。
+    //
+    // 之前是无条件画，位置取自 yFor(音域边界)。而 yFor 会把频率钳到
+    // [fMin, fMax]，所以范围滑到男声区以下时，"女声"标签会被放到画布
+    // **下方**——drawText 拿「画布尺寸 − 位置」当布局约束，算出负的
+    // maxHeight，直接抛 IllegalArgumentException 把 App 干翻。
+    bandLabelY(FemaleRange.start, FemaleRange.endInclusive, fMin, fMax, height)?.let { labelY ->
+        drawLabel(
+            textMeasurer = textMeasurer,
+            text = "女声",
+            x = left + 8.dp.toPx(),
+            y = labelY + 5.dp.toPx(),
+            style = TextStyle(
+                fontSize = 10.sp,
+                color = palette.trace.copy(alpha = 0.9f),
+                fontWeight = FontWeight.Medium,
+            ),
+        )
+    }
+    bandLabelY(MaleRange.start, MaleRange.endInclusive, fMin, fMax, height)?.let { labelY ->
+        drawLabel(
+            textMeasurer = textMeasurer,
+            text = "男声",
+            x = left + 8.dp.toPx(),
+            y = labelY + 5.dp.toPx(),
+            style = TextStyle(
+                fontSize = 10.sp,
+                color = palette.primaryInk.copy(alpha = 0.9f),
+                fontWeight = FontWeight.Medium,
+            ),
+        )
+    }
+}
+
+/**
+ * 画一段文字，位置自动夹在画布内。
+ *
+ * drawText 会用「画布尺寸 − 文字位置」当布局约束，位置越界就会算出
+ * 负的 maxWidth/maxHeight，Compose 直接抛异常。夹一下就不会。
+ */
+private fun DrawScope.drawLabel(
+    textMeasurer: TextMeasurer,
+    text: String,
+    x: Float,
+    y: Float,
+    style: TextStyle,
+) {
+    val safeX = x.coerceIn(0f, (size.width - 1f).coerceAtLeast(0f))
+    val safeY = y.coerceIn(0f, (size.height - 1f).coerceAtLeast(0f))
     drawText(
         textMeasurer = textMeasurer,
-        text = "女声",
-        topLeft = Offset(left + 8.dp.toPx(), femaleTop + 5.dp.toPx()),
-        style = TextStyle(
-            fontSize = 10.sp,
-            color = palette.trace.copy(alpha = 0.9f),
-            fontWeight = FontWeight.Medium,
-        ),
-    )
-    drawText(
-        textMeasurer = textMeasurer,
-        text = "男声",
-        topLeft = Offset(left + 8.dp.toPx(), maleTop + 5.dp.toPx()),
-        style = TextStyle(
-            fontSize = 10.sp,
-            color = palette.primaryInk.copy(alpha = 0.9f),
-            fontWeight = FontWeight.Medium,
-        ),
+        text = text,
+        topLeft = Offset(safeX, safeY),
+        style = style,
     )
 }
 

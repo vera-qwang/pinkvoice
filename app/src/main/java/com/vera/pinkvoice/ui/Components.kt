@@ -23,6 +23,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.abs
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import kotlin.math.roundToInt
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 
 /** 状态点：运行中绿色，空闲灰色。 */
 @Composable
@@ -248,4 +255,40 @@ fun CardSurface(modifier: Modifier = Modifier, content: @Composable () -> Unit) 
         )
         content()
     }
+}
+
+/**
+ * 频率范围指示器。
+ *
+ * 显示当前可见的频率范围，点一下回到默认。
+ * 范围不是默认的时候前面加个 ⟲，提示"点它可以复位"。
+ */
+@Composable
+fun FrequencyRangeChip(
+    range: FrequencyRange,
+    modifier: Modifier = Modifier,
+) {
+    val palette = LocalVoicePalette.current
+    // 只读这一个 composable 里的状态，滑动时不会牵连整屏重组
+    val min = range.min
+    val max = range.max
+    val changed = !range.isDefault
+    Text(
+        text = if (changed) {
+            "⟲ ${min.roundToInt()}–${max.roundToInt()} Hz"
+        } else {
+            "${min.roundToInt()}–${max.roundToInt()} Hz"
+        },
+        fontSize = 11.sp,
+        fontWeight = if (changed) FontWeight.Medium else FontWeight.Normal,
+        color = if (changed) {
+            palette.primaryInk
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(enabled = changed) { range.reset() }
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    )
 }

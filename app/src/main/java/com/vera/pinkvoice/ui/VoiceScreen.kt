@@ -130,6 +130,8 @@ fun VoiceScreen(
     ) { granted = it }
 
     var gain by remember { mutableFloatStateOf(0.55f) }
+    // 频率轴的可见范围：曲线上滑动 / 双指缩放可以调
+    val freqRange = rememberFrequencyRange()
     var showSettings by remember { mutableStateOf(false) }
     var device by remember { mutableStateOf(AudioOutputInfo.current(audioManager)) }
 
@@ -403,30 +405,44 @@ fun VoiceScreen(
                     offsetMs = engine.autoOffsetMs.collectAsState().value.toLong(),
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 26.dp),
+                        // 下边距要给最下面那条音名标签留出空间：
+                        // 标签画在 y-7px 处，字高约 27px，会往下探出绘图区一点，
+                        // 留 26 dp 会被底部那一行切掉半截。
+                        .padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 34.dp),
                     textMeasurer = textMeasurer,
                     active = running,
                     avgHz = readout.avgHz,
+                    range = freqRange,
                 )
-                // 底部左侧说明那条虚线是窗口平均音高——数值本身在读数卡里，
-                // 这里只给一个图例，免得用户对着虚线猜它是什么。
-                Text(
-                    text = "虚线 = 平均音高 · 实线 = 当前音高",
-                    fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                // 底部一行：图例 / 频率范围 / 对齐值。
+                //
+                // 三样东西都在这一行里——之前"对齐"单独放在 BottomEnd，
+                // 一旦频率范围被调高，最下面那条频率标签正好和它撞上。
+                Row(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
-                        // 让开坐标栏（44 dp），E2 音名就在那儿
-                        .padding(start = 60.dp, bottom = 8.dp),
-                )
-                Text(
-                    text = "对齐 ${engine.autoOffsetMs.collectAsState().value.roundToInt()} ms",
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 16.dp, bottom = 8.dp),
-                )
+                        .fillMaxWidth()
+                        // 与绘图区左缘对齐（卡片内边距 14 + 坐标栏 22）
+                        .padding(start = 36.dp, end = 16.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    // 图例：说明那条虚线是窗口平均音高——数值本身在读数卡里，
+                    // 这里只给一个图例，免得用户对着虚线猜它是什么。
+                    Text(
+                        text = "虚线 = 平均音高 · 实线 = 当前音高",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    // 频率范围。点一下回到默认。
+                    FrequencyRangeChip(range = freqRange)
+                    Text(
+                        text = "对齐 ${engine.autoOffsetMs.collectAsState().value.roundToInt()} ms",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
 
@@ -660,6 +676,16 @@ private fun SettingsSheet(
                     }
                 }
             }
+
+            // --- 频率范围 ---
+            SectionLabel("频率范围")
+            Text(
+                text = "在曲线上**上下滑动**可以调整可见的频率范围，" +
+                    "**双指捏合**可以缩放。默认覆盖 80–270 Hz，" +
+                    "也就是男声区和女声区。改过的范围点一下右下角就能复位。",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
 
             // --- 视觉对齐 ---
             SectionLabel("视觉对齐")
