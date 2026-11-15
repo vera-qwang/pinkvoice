@@ -41,16 +41,26 @@ android {
         // （用正式密钥时记得把 release.keystore 加进 .gitignore）
         create("release") {
             val path = providers.environmentVariable("PINKVOICE_KEYSTORE_PATH").orNull
-            if (path != null && file(path).exists()) {
-                storeFile = file(path)
+            if (path != null) {
+                // 明确指定了密钥路径却找不到文件 —— **直接失败**。
+                // 之前这里是静默退回 debug keystore，结果发布出去的
+                // "正式版"其实是 debug 签名的，用户装了正式签名版会装不上。
+                // 宁可构建失败，也不要悄悄发一个签名不对的包。
+                val f = file(path)
+                require(f.exists()) {
+                    "PINKVOICE_KEYSTORE_PATH 指向的文件不存在: $path"
+                }
+                storeFile = f
                 storePassword = providers.environmentVariable("PINKVOICE_KEYSTORE_PASSWORD").orNull ?: "android"
                 keyAlias = providers.environmentVariable("PINKVOICE_KEY_ALIAS").orNull ?: "androiddebugkey"
                 keyPassword = providers.environmentVariable("PINKVOICE_KEY_PASSWORD").orNull ?: "android"
+                println("[签名] 使用正式密钥: $path (alias=$keyAlias)")
             } else {
                 storeFile = rootProject.file("debug.keystore")
                 storePassword = "android"
                 keyAlias = "androiddebugkey"
                 keyPassword = "android"
+                println("[签名] 未配置 PINKVOICE_KEYSTORE_PATH，退回仓库内的 debug keystore")
             }
         }
     }

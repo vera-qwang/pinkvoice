@@ -71,6 +71,27 @@ jobs:
             echo "::notice::未配置签名 secrets，改用仓库内的 debug keystore 签名"
           fi
 
+      - name: 校验签名密钥
+        # 在跑 gradle 之前先验一遍。口令错了的话，gradle 会一路跑到
+        # packageRelease 才炸（KeytoolException: keystore password was incorrect），
+        # 前面十几步全白跑，日志还很难找。这里提前挡住，报错也直白。
+        run: |
+          if [ -z "$PINKVOICE_KEYSTORE_PATH" ]; then
+            echo "::warning::没配置签名 Secret，用仓库内的 debug keystore 签名"
+            exit 0
+          fi
+          if [ ! -f "$PINKVOICE_KEYSTORE_PATH" ]; then
+            echo "::error::keystore 文件不存在：$PINKVOICE_KEYSTORE_PATH"
+            exit 1
+          fi
+          echo "keystore 大小: $(stat -c %s "$PINKVOICE_KEYSTORE_PATH") 字节"
+          if ! keytool -list -keystore "$PINKVOICE_KEYSTORE_PATH" \
+               -storepass "$PINKVOICE_KEYSTORE_PASSWORD" > /dev/null 2>&1; then
+            echo "::error::密钥库口令不对——重跑 scripts/setup-release-secrets.sh"
+            exit 1
+          fi
+          echo "::notice::密钥库口令正确"
+
       - name: 确定版本号
         id: ver
         run: |
@@ -96,7 +117,9 @@ jobs:
 
       - name: 构建 Release APK
         run: |
-          ./gradlew --no-daemon --stacktrace \
+          # 关掉配置缓存：签名配置依赖环境变量，配置缓存会让
+          # "这次用的是哪个 keystore" 被上一次的结果固化住。
+          ./gradlew --no-daemon --stacktrace --no-configuration-cache \
             :app:assembleRelease \
             -PversionName="${{ steps.ver.outputs.version }}" \
             -PversionCode="${{ steps.ver.outputs.code }}"

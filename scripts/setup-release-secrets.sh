@@ -3,12 +3,16 @@
 # 把发布用的 keystore 配成 GitHub Secrets，让 CI 用正式签名构建 Release APK。
 #
 # 用法：
-#     ./scripts/setup-release-secrets.sh /path/to/release.keystore
+#     ./scripts/setup-release-secrets.sh <keystore 路径> [仓库名]
 #
-# 会做三件事：
-#   1. 设 4 个 Secret（keystore base64 + 口令 + 别名）
-#   2. 删掉早期的 "latest" 滚动预发布（已改成只按标签发布）
-#   3. 打印验证方法
+# 口令来源（按优先级）：
+#   1. 环境变量 PINKVOICE_STORE_PASSWORD
+#   2. keystore 同目录下的 store-password.txt
+#   3. 交互式输入
+#
+# 关键：**设 Secret 之前先用 keytool 验证口令**。
+# 口令打错的话，CI 会一路跑到打包那步才炸（KeytoolException: keystore
+# password was incorrect），排查起来很绕。这里提前挡住。
 #
 # 需要 gh 已登录（gh auth login）且对仓库有写权限。
 
@@ -26,15 +30,42 @@ if [ ! -f "$KEYSTORE" ]; then
   exit 1
 fi
 
-# 口令：优先用环境变量，否则交互式问（不回显）
+KEYSTORE_DIR="$(cd "$(dirname "$KEYSTORE")" && pwd)"
+
+# ---- 1. 取口令 ----
 if [ -z "${PINKVOICE_STORE_PASSWORD:-}" ]; then
-  read -r -s -p "密钥库口令: " PINKVOICE_STORE_PASSWORD
-  echo
+  PW_FILE="$KEYSTORE_DIR/store-password.txt"
+  if [ -f "$PW_FILE" ]; then
+    echo "==> 口令来自 $PW_FILE"
+    PINKVOICE_STORE_PASSWORD="$(tr -d '\r\n' < "$PW_FILE")"
+  else
+    read -r -s -p "密钥库口令: " PINKVOICE_STORE_PASSWORD
+    echo
+  fi
 fi
 
 ALIAS="${PINKVOICE_KEY_ALIAS:-pinkvoice}"
 KEY_PASSWORD="${PINKVOICE_KEY_PASSWORD:-$PINKVOICE_STORE_PASSWORD}"
 
+# ---- 2. 验证口令（必须在设 Secret 之前）----
+echo "==> 验证口令"
+if ! keytool -list -keystore "$KEYSTORE" -storepass "$PINKVOICE_STORE_PASSWORD" >/dev/null 2>&1; then
+  echo "✗ 口令不对！keystore 打不开：$KEYSTORE" >&2
+  echo "  别手抄——从同目录的 store-password.txt 读，或者" >&2
+  echo "  export PINKVOICE_STORE_PASSWORD=... 再跑这个脚本。" >&2
+  exit 1
+fi
+echo "  ✓ 口令正确"
+
+# 顺便确认别名存在
+if ! keytool -list -keystore "$KEYSTORE" -storepass "$PINKVOICE_STORE_PASSWORD" 2>/dev/null | grep -q "$ALIAS"; then
+  echo "✗ keystore 里没有别名 '$ALIAS'。现有别名：" >&2
+  keytool -list -keystore "$KEYSTORE" -storepass "$PINKVOICE_STORE_PASSWORD" 2>/dev/null | grep -i "别名\|alias" >&2
+  exit 1
+fi
+echo "  ✓ 别名 '$ALIAS' 存在"
+
+# ---- 3. 设 Secret ----
 if ! command -v gh >/dev/null 2>&1; then
   echo "找不到 gh，先装一个：brew install gh" >&2
   exit 1
@@ -74,14 +105,14 @@ cat <<'EOF'
 
 完成。下次打标签就会用正式签名：
 
-    git tag v0.1.1
-    git push origin v0.1.1
+    git tag v0.1.0
+    git push origin v0.1.0
 
 验证签名是否换成正式密钥：
 
     ./scripts/verify-apk-signing.sh
 
-提示：keystore 丢了的话，**已发布的 APK 就再也装不上了**
-（系统认签名，换签名只能卸载重装，App 数据会丢）。
-请把它备份到密码管理器或安全硬盘。
+提示：keystore 一旦丢失，**已发布的 APK 就再也装不上了**
+（系统认签名，签名变了只能卸载重装，App 数据会丢）。
+请备份到密码管理器或安全硬盘，不要只放在一台机器上。
 EOF
