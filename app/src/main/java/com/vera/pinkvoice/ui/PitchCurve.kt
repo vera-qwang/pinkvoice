@@ -224,10 +224,14 @@ fun PitchCurve(
             }
 
             // 窗口平均音高参考线：练声时能一眼看出"我整体在多高"
+            //
+            // 颜色跟着它所在的音域走：平均音高落在女声区就是粉色，
+            // 落在男声区就是蓝色。这样虚线和背景色带、左侧音名、
+            // 右上角的大音名是同一套语义，不用再解释"这个蓝是什么意思"。
             if (avgHz != null && avgHz > 0f) {
                 val y = yFor(avgHz, h, fMin, fMax)
                 drawLine(
-                    color = palette.primaryInk.copy(alpha = 0.45f),
+                    color = bandColorOf(avgHz, palette).copy(alpha = 0.55f),
                     start = Offset(plotLeft, y),
                     end = Offset(plotRight, y),
                     strokeWidth = 1.2.dp.toPx(),
@@ -239,18 +243,22 @@ fun PitchCurve(
             }
 
             // 右侧当前音高指示（取"此刻听到"的那一点）
+            //
+            // 用**实线** + 圆点，和平均音高的虚线区分开——
+            // 两条都是虚线的时候很容易看混，图例只解释了一条。
+            // 颜色跟着当前音高所在的音域走。
             val heard = history.sampleAt(endNs)
             if (heard != null && heard.hz > 0f && heard.clarity >= 0.3f) {
                 val y = yFor(heard.hz, h, fMin, fMax)
+                val ink = bandColorOf(heard.hz, palette)
                 drawLine(
-                    color = palette.primaryInk,
+                    color = ink,
                     start = Offset(plotLeft, y),
                     end = Offset(plotRight, y),
                     strokeWidth = 1.4.dp.toPx(),
-                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 8f)),
                 )
                 drawCircle(
-                    palette.primaryInk,
+                    ink,
                     radius = 5.dp.toPx(),
                     center = Offset(plotRight - 6.dp.toPx(), y),
                 )

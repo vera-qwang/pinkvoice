@@ -411,7 +411,7 @@ fun VoiceScreen(
                 // 底部左侧说明那条虚线是窗口平均音高——数值本身在读数卡里，
                 // 这里只给一个图例，免得用户对着虚线猜它是什么。
                 Text(
-                    text = "虚线 = 窗口平均音高",
+                    text = "虚线 = 平均音高 · 实线 = 当前音高",
                     fontSize = 10.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier

@@ -36,6 +36,22 @@
 
 <p align="center"><sub>浅色 / 深色 / 跟随系统三档外观，设置面板里随时切换</sub></p>
 
+<div align="center">
+  <img src="docs/screenshots/settings.png" width="300" alt="设置面板">
+</div>
+
+<p align="center"><sub>延迟测量与对齐补偿 · 蓝牙设备自动识别 · 实时插拔耳机</sub></p>
+
+## 下载
+
+| 版本 | 说明 |
+|---|---|
+| [Releases](https://github.com/vera-qwang/pinkvoice/releases) | 正式版本（带标签的 Release）和滚动更新的 `latest` 预发布，APK 直接下载 |
+| [Actions 构建](https://github.com/vera-qwang/pinkvoice/actions) | 每次提交的自动构建，APK 作为 artifact 可下载 |
+
+APK 需要 Android 8.0（API 26）及以上。直接装 APK 需要在系统里允许
+「安装未知来源应用」。
+
 ## 快速开始
 
 ```bash

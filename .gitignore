@@ -17,3 +17,7 @@ captures/
 
 # 机器相关的 SDK 路径，由 Android Studio / gradlew 自动生成
 local.properties
+
+# 本地发布签名密钥（正式密钥通过 CI secrets 注入，绝不能提交）
+release.keystore
+*.jks
