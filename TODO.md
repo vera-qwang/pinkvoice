@@ -125,10 +125,11 @@
 
 这些是之前提出过但还没定论的设计问题。
 
-### [ ] 平均音高虚线的颜色
+### [x] 平均音高虚线的颜色
 
-现在用**蓝色**（男声区色），但它代表的是"你的整体音高"，
-不一定落在男声区。改成中性灰？或者跟随当前音高所在音域的颜色？
+已改成**跟随所在音域**：女声区粉色、男声区蓝色。
+顺带把当前音高指示线也改成按音域着色，并从虚线改成实线 + 圆点
+（两条都是虚线容易看混，图例只解释了一条）。
 
 ### [ ] 曲线卡高度
 
@@ -181,6 +182,11 @@
 
 ## P4 · 仓库运维
 
+- [x] CI 自动发布带 APK 的 Release
+      （推标签 `v*` → 正式版；推 main → 滚动 `latest` 预发布）
+- [ ] 配正式签名密钥（目前用仓库内的 debug keystore 兜底，
+      secrets：`PINKVOICE_KEYSTORE_BASE64` / `PINKVOICE_STORE_PASSWORD` /
+      `PINKVOICE_KEY_ALIAS` / `PINKVOICE_KEY_PASSWORD`）
 - [ ] 仓库描述与 topics（文案在 `.github/repo-metadata.md`）
 - [ ] 设置 Issues / Discussions 标签
 - [ ] README 的中英双语切换（当前只有中文）
