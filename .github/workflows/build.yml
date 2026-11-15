@@ -32,10 +32,26 @@ jobs:
       - name: 配置 Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: 接受 SDK 许可
+        # 必须先接受许可再装包：sdkmanager 在许可未接受时会拒绝安装。
+        # 原先这两步写反了（先装后接受），CI 卡在"配置 Android SDK"就失败。
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+
       - name: 安装 SDK 组件
         run: |
-          sdkmanager "platforms;android-36" "build-tools;36.1.0"
-          yes | sdkmanager --licenses > /dev/null
+          sdkmanager --install "platforms;android-36" "build-tools;36.1.0" "platform-tools"
+
+      - name: 校验 SDK 组件
+        # 直接查目录，不依赖 sdkmanager 的输出格式。
+        # 缺包时明确报出缺哪个，比让 Gradle 抛一堆 "failed to find target" 清楚。
+        run: |
+          ok=1
+          [ -d "$ANDROID_HOME/platforms/android-36" ]    || { echo "::error::缺少 platforms;android-36"; ok=0; }
+          [ -d "$ANDROID_HOME/build-tools/36.1.0" ]      || { echo "::error::缺少 build-tools;36.1.0"; ok=0; }
+          ls "$ANDROID_HOME/platforms"  2>/dev/null || true
+          ls "$ANDROID_HOME/build-tools" 2>/dev/null || true
+          [ "$ok" = 1 ]
 
       - name: 单元测试
         run: ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest
