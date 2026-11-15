@@ -50,24 +50,24 @@ if [ -n "$REPO" ]; then
 fi
 
 echo "==> 设置 Secret: PINKVOICE_KEYSTORE_BASE64"
-base64 -i "$KEYSTORE" | tr -d '\n' | gh secret set PINKVOICE_KEYSTORE_BASE64 "${GH_ARGS[@]}"
+base64 -i "$KEYSTORE" | tr -d '\n' | gh secret set PINKVOICE_KEYSTORE_BASE64 ${GH_ARGS[@]+"${GH_ARGS[@]}"}
 
 echo "==> 设置 Secret: PINKVOICE_STORE_PASSWORD"
-gh secret set PINKVOICE_STORE_PASSWORD --body "$PINKVOICE_STORE_PASSWORD" "${GH_ARGS[@]}"
+gh secret set PINKVOICE_STORE_PASSWORD --body "$PINKVOICE_STORE_PASSWORD" ${GH_ARGS[@]+"${GH_ARGS[@]}"}
 
 echo "==> 设置 Secret: PINKVOICE_KEY_ALIAS"
-gh secret set PINKVOICE_KEY_ALIAS --body "$ALIAS" "${GH_ARGS[@]}"
+gh secret set PINKVOICE_KEY_ALIAS --body "$ALIAS" ${GH_ARGS[@]+"${GH_ARGS[@]}"}
 
 echo "==> 设置 Secret: PINKVOICE_KEY_PASSWORD"
-gh secret set PINKVOICE_KEY_PASSWORD --body "$KEY_PASSWORD" "${GH_ARGS[@]}"
+gh secret set PINKVOICE_KEY_PASSWORD --body "$KEY_PASSWORD" ${GH_ARGS[@]+"${GH_ARGS[@]}"}
 
 echo "==> 已设置的 Secret:"
-gh secret list "${GH_ARGS[@]}" | grep -E 'PINKVOICE_' || true
+gh secret list ${GH_ARGS[@]+"${GH_ARGS[@]}"} | grep -E 'PINKVOICE_' || true
 
 # 早期的"latest"滚动预发布已经不用了（改成只按标签发布），顺手清掉
-if gh release view latest "${GH_ARGS[@]}" >/dev/null 2>&1; then
+if gh release view latest ${GH_ARGS[@]+"${GH_ARGS[@]}"} >/dev/null 2>&1; then
   echo "==> 删除遗留的 latest 预发布"
-  gh release delete latest --yes --cleanup-tag "${GH_ARGS[@]}" || true
+  gh release delete latest --yes --cleanup-tag ${GH_ARGS[@]+"${GH_ARGS[@]}"} || true
 fi
 
 cat <<'EOF'

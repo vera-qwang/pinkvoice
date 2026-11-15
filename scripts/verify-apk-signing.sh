@@ -32,7 +32,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 echo "==> 列出 $TAG 的附件"
-URLS=$(gh release view "$TAG" "${GH_ARGS[@]}" --json assets --jq '.assets[].browserDownloadUrl')
+URLS=$(gh release view "$TAG" ${GH_ARGS[@]+"${GH_ARGS[@]}"} --json assets --jq '.assets[].browserDownloadUrl')
 if [ -z "$URLS" ]; then
   echo "  没有附件" >&2
   exit 1
