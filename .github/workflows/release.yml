@@ -1,25 +1,22 @@
 name: Release
 
-# 两种发布方式：
+# 只在**打标签**时构建发布：
 #
-# 1. 推标签（v1.2.3）→ 发布正式 Release
-#      git tag v1.2.3 && git push origin v1.2.3
+#     git tag v1.2.3 && git push origin v1.2.3
 #
-# 2. 推 main 分支 → 更新滚动的 "latest" 预发布
-#      用户永远能从 Releases 页面下到最新构建，不用等发版。
+# 普通提交不触发——每次提交都构建一遍 Release 纯属浪费 Actions 额度，
+# 而且会把正式版本的列表冲得很乱。
 #
-# 也可以手动触发（Actions → Release → Run workflow）。
+# 也可以手动触发（Actions → Release → Run workflow），用于补发某个标签。
 
 on:
   push:
-    branches: [ main ]
     tags: [ 'v*' ]
   workflow_dispatch:
     inputs:
       tag:
-        description: '发布标签，例如 v0.2.0（留空则只更新 latest）'
-        required: false
-        default: ''
+        description: '要发布的标签，例如 v0.2.0'
+        required: true
 
 permissions:
   contents: write
@@ -78,17 +75,12 @@ jobs:
         id: ver
         run: |
           set -euo pipefail
+          # 手动触发时用输入的标签，推标签时用标签本身
           TAG="${{ github.event.inputs.tag }}"
           if [ -z "$TAG" ]; then
-            TAG="${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}"
+            TAG="${{ github.ref_name }}"
           fi
-
-          if [ "$TAG" = "latest" ]; then
-            # 滚动预发布：版本号带短 SHA，一眼能看出是哪个提交
-            VERSION="0.1.0+${GITHUB_SHA::7}"
-          else
-            VERSION="${TAG#v}"
-          fi
+          VERSION="${TAG#v}"
 
           # versionCode 统一用构建时间（YYMMDDHH）。
           #
@@ -126,18 +118,9 @@ jobs:
           APK: dist/${{ steps.apk.outputs.name }}
         run: |
           set -euo pipefail
-          if [ "$TAG" = "latest" ]; then
-            # 滚动预发布：始终只有一个 latest，APK 每次替换
-            if gh release view latest >/dev/null 2>&1; then
-              gh release upload latest "$APK" --clobber
-              gh release edit latest --target "$GITHUB_SHA" --title "PinkVoice (latest)" || true
-            else
-              gh release create latest "$APK" \
-                --target "$GITHUB_SHA" \
-                --title "PinkVoice (latest)" \
-                --prerelease \
-                --notes "自动构建的最新版本，来自 \`main\` 分支。正式版本请看带版本号的 Release。"
-            fi
+          # 标签已存在就补传（重跑同一标签时用），否则新建
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --clobber
           else
             gh release create "$TAG" "$APK" \
               --title "PinkVoice $VERSION" \
