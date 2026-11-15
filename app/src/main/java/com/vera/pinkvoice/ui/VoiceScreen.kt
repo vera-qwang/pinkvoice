@@ -1,6 +1,10 @@
 package com.vera.pinkvoice.ui
 
 import android.Manifest
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.os.Handler
+import android.os.Looper
 import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
@@ -126,7 +130,6 @@ fun VoiceScreen(
     ) { granted = it }
 
     var gain by remember { mutableFloatStateOf(0.55f) }
-    var extraOffset by remember { mutableFloatStateOf(0f) }
     var showSettings by remember { mutableStateOf(false) }
     var device by remember { mutableStateOf(AudioOutputInfo.current(audioManager)) }
 
@@ -137,10 +140,49 @@ fun VoiceScreen(
     // 不如直接不返听——只做音高监测，接上耳机自动恢复。
     val monitoringAvailable = device.kind != AudioOutputInfo.Kind.SPEAKER
 
-    LaunchedEffect(running) {
-        if (running) device = AudioOutputInfo.current(audioManager)
+    // **实时检测输出设备变化**。
+    //
+    // 之前只在启动监听时读一次设备，于是插上/拔掉耳机都要重启 App 才能生效。
+    // AudioDeviceCallback 会在设备增删时回调，这里据此刷新。
+    //
+    // 系统切换音频路由是异步的（设备回调先到、路由后定），所以回调里
+    // 延迟一小会儿再读一次，读到的才是真正生效的设备。
+    DisposableEffect(audioManager) {
+        val handler = Handler(Looper.getMainLooper())
+        var pending: Runnable? = null
+        // 局部函数要声明在匿名对象之前才能被它引用
+        lateinit var scheduleRefresh: () -> Unit
+        val callback = object : AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+                scheduleRefresh()
+            }
+
+            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+                scheduleRefresh()
+            }
+        }
+        scheduleRefresh = {
+            pending?.let { handler.removeCallbacks(it) }
+            val r = Runnable {
+                pending = null
+                device = AudioOutputInfo.current(audioManager)
+            }
+            pending = r
+            handler.postDelayed(r, DEVICE_SETTLE_MS)
+        }
+        audioManager.registerAudioDeviceCallback(callback, handler)
+        onDispose {
+            pending?.let { handler.removeCallbacks(it) }
+            audioManager.unregisterAudioDeviceCallback(callback)
+        }
     }
-    LaunchedEffect(monitoringAvailable) { engine.monitoringEnabled = monitoringAvailable }
+
+    // 设备变化后要重新判定能不能返听。运行中切换会用引擎的运行时接口
+    // 立刻关掉/开启返听通道——蓝牙耳机被拔掉时必须马上关，
+    // 否则声音会从手机扬声器播出来，麦克风再拾取形成啸叫。
+    LaunchedEffect(monitoringAvailable) {
+        engine.applyMonitoringEnabled(monitoringAvailable)
+    }
     LaunchedEffect(gain) { engine.monitorGain = gain }
 
     // 视觉对齐量 = 输出延迟 - 分析延迟（推导见 README），蓝牙附加部分手动补
@@ -153,7 +195,6 @@ fun VoiceScreen(
     // 引擎每 8 Hz 发布一次这个值。如果在顶层订阅，整屏会跟着重组 8 次/秒
     // ——真机实测这一项就占 17% CPU。所以订阅点下沉到真正需要它的子组件：
     // 曲线自己订阅（只重绘），文字标签自己订阅（只重组那一行）。
-    val extraOffsetState = extraOffset
 
     val textMeasurer = rememberTextMeasurer()
     val palette = LocalVoicePalette.current
@@ -167,7 +208,7 @@ fun VoiceScreen(
         while (true) {
             delay(UI_FRAME_INTERVAL_MS)
             run {
-                val offsetMs = engine.autoOffsetMs.value + extraOffsetState
+                val offsetMs = engine.autoOffsetMs.value
                 val endNs =
                     engine.history.latestTimeNs - offsetMs.toLong() * 1_000_000L
                 val s = engine.history.sampleAt(endNs)
@@ -359,7 +400,7 @@ fun VoiceScreen(
             Box(Modifier.fillMaxSize()) {
                 PitchCurve(
                     history = engine.history,
-                    offsetMs = engine.autoOffsetMs.collectAsState().value.toLong() + extraOffsetState.toLong(),
+                    offsetMs = engine.autoOffsetMs.collectAsState().value.toLong(),
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 26.dp),
@@ -379,7 +420,7 @@ fun VoiceScreen(
                         .padding(start = 60.dp, bottom = 8.dp),
                 )
                 Text(
-                    text = "对齐 ${(engine.autoOffsetMs.collectAsState().value + extraOffsetState).roundToInt()} ms",
+                    text = "对齐 ${engine.autoOffsetMs.collectAsState().value.roundToInt()} ms",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier
@@ -486,8 +527,6 @@ fun VoiceScreen(
             engine = engine,
             device = device,
             monitoringAvailable = monitoringAvailable,
-            extraOffset = extraOffset,
-            onExtraOffsetChange = { extraOffset = it },
             themeMode = themeMode,
             onThemeModeChange = onThemeModeChange,
         )
@@ -496,6 +535,14 @@ fun VoiceScreen(
 
 /** UI 刷新限速：30 fps。屏幕是 120 Hz，但曲线与读数都是慢变量。 */
 private const val UI_FRAME_INTERVAL_MS = 33L
+
+/**
+ * 设备变化后等多久再读。
+ *
+ * 系统切换音频路由是异步的：AudioDeviceCallback 先回调，
+ * 路由过一会儿才定。读太早会拿到还没切换的旧设备。
+ */
+private const val DEVICE_SETTLE_MS = 400L
 
 /**
  * 曲线窗口时长（ms）。
@@ -564,8 +611,6 @@ private fun SettingsSheet(
     engine: VoiceEngine,
     device: AudioOutputInfo.Device,
     monitoringAvailable: Boolean,
-    extraOffset: Float,
-    onExtraOffsetChange: (Float) -> Unit,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
 ) {
@@ -616,30 +661,16 @@ private fun SettingsSheet(
                 }
             }
 
-            // --- 视觉对齐补偿 ---
-            SectionLabel("视觉对齐补偿")
+            // --- 视觉对齐 ---
+            SectionLabel("视觉对齐")
             Text(
-                text = "蓝牙耳机有 100–300ms 的输出延迟，系统测不到，需要手动补。" +
-                    "让耳朵听到的音高起伏和屏幕上的曲线同时发生即可。",
+                text = "曲线会自动补偿输出延迟，让它和耳朵听到的同步。" +
+                    "蓝牙耳机这段延迟系统测得到（实测约 390 ms），已自动计入。",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Slider(
-                    value = extraOffset,
-                    onValueChange = onExtraOffsetChange,
-                    valueRange = 0f..400f,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    text = "+${extraOffset.roundToInt()} ms",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-            }
             Text(
-                text = "自动对齐 ${autoOffsetMs.roundToInt()} ms（输出延迟 − 分析延迟）",
+                text = "当前对齐 ${autoOffsetMs.roundToInt()} ms（输出延迟 − 分析延迟）",
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

@@ -187,43 +187,10 @@ class VoiceEngine(
         // 返听通道：只在允许返听时才创建。
         // 没有外接设备时完全不创建 AudioTrack——省内存、省 CPU，
         // 也从根本上杜绝了"内置扬声器拾取自己"的正反馈。
-        var track: AudioTrack? = null
-        if (monitoringEnabled) {
-            val minTrack = AudioTrack.getMinBufferSize(rate, OUT_CHANNEL, ENCODING)
-            if (minTrack <= 0) {
-                rec.release()
-                return "设备不支持 ${rate}Hz 单声道播放"
-            }
-            val trackBuf = maxOf(minTrack * 2, BLOCK_FRAMES * 8)
-
-            track = try {
-            AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setEncoding(ENCODING)
-                        .setSampleRate(rate)
-                        .setChannelMask(OUT_CHANNEL)
-                        .build()
-                )
-                    .setBufferSizeInBytes(trackBuf)
-                    .setTransferMode(AudioTrack.MODE_STREAM)
-                    .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
-                    .build()
-            } catch (e: Exception) {
-                rec.release()
-                return "播放通道创建失败：${e.message}"
-            }
-            if (track.state != AudioTrack.STATE_INITIALIZED) {
-                track.release()
-                rec.release()
-                return "播放通道初始化失败"
-            }
+        val track = if (monitoringEnabled) createTrack(rate) else null
+        if (monitoringEnabled && track == null) {
+            rec.release()
+            return "播放通道创建失败"
         }
 
         // ---- 全部就绪，正式开跑 ----
@@ -270,13 +237,92 @@ class VoiceEngine(
         return null
     }
 
+    /**
+     * 运行时切换返听。
+     *
+     * 蓝牙耳机被拔掉时必须**立刻**关掉返听——否则声音会从手机扬声器播出来，
+     * 麦克风再拾取自己的声音形成啸叫。这个开关不能只在启动时生效，
+     * 得能在运行中改。
+     */
+    fun applyMonitoringEnabled(enabled: Boolean) {
+        if (monitoringEnabled == enabled) return
+        monitoringEnabled = enabled
+        if (!running) return
+
+        if (enabled) {
+            val track = createTrack(activeRate)
+            if (track == null) {
+                monitoringEnabled = false
+                Log.w(TAG, "运行时开启返听失败，保持关闭")
+                return
+            }
+            player = track
+            track.setVolume(monitorGain)
+            track.play()
+            startMonitorThread(track)
+            Log.i(TAG, "monitoring enabled at runtime")
+        } else {
+            stopMonitorThread()
+            runCatching { player?.stop() }
+            runCatching { player?.release() }
+            player = null
+            Log.i(TAG, "monitoring disabled at runtime")
+        }
+    }
+
+    /** 创建返听播放通道。失败返回 null。 */
+    private fun createTrack(rate: Int): AudioTrack? {
+        val minTrack = AudioTrack.getMinBufferSize(rate, OUT_CHANNEL, ENCODING)
+        if (minTrack <= 0) return null
+        val trackBuf = maxOf(minTrack * 2, BLOCK_FRAMES * 8)
+        val track = try {
+            AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(ENCODING)
+                        .setSampleRate(rate)
+                        .setChannelMask(OUT_CHANNEL)
+                        .build()
+                )
+                .setBufferSizeInBytes(trackBuf)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+                .build()
+        } catch (e: Exception) {
+            Log.w(TAG, "播放通道创建失败：${e.message}")
+            return null
+        }
+        if (track.state != AudioTrack.STATE_INITIALIZED) {
+            track.release()
+            return null
+        }
+        return track
+    }
+
+    private fun startMonitorThread(track: AudioTrack) {
+        monitorThread = Thread({ monitorLoop(track) }, "voice-monitor").apply {
+            priority = Thread.MAX_PRIORITY
+            start()
+        }
+    }
+
+    private fun stopMonitorThread() {
+        monitorThread?.join(500)
+        monitorThread = null
+    }
+
     fun stop() {
         if (!running && recorder == null) return
         running = false
         captureThread?.join(500)
-        monitorThread?.join(500)
+        stopMonitorThread()
         captureThread = null
-        monitorThread = null
         runCatching { recorder?.stop() }
         runCatching { recorder?.release() }
         runCatching { player?.stop() }
@@ -458,6 +504,12 @@ object AudioOutputInfo {
 
     fun current(audioManager: AudioManager): Device {
         val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+
+        // 只认**当前连着**的输出设备。
+        //
+        // getDevices(GET_DEVICES_OUTPUTS) 返回的是系统当前的输出设备集合：
+        // 蓝牙耳机连上且接管音频时会出现，拔掉后就没了（已真机验证）。
+        // 配对但没连上的耳机不会出现在这个列表里。
         val preferred = devices.firstOrNull {
             it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
                 it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
