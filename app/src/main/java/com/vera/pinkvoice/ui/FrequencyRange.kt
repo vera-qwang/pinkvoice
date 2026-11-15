@@ -49,11 +49,10 @@ class FrequencyRange internal constructor(
      * @param deltaPx 手指纵向位移（像素，向下为正）
      * @param heightPx 绘图区高度（像素）
      *
-     * 方向：**往上滑 → 看到更高的频率**。
+     * 方向：**内容跟着手指走**。
      *
-     * 这里没有跟着"内容走"（那会让上滑变成看低频），
-     * 而是按数值轴的直觉来：频率轴上高在上，往上推就是往高频看。
-     * 和推子、变速轮、调音轮的肌肉记忆一致。
+     * 手指往上滑 → 曲线往上移 → 露出下面那段 → 看到更低的频率。
+     * 和滚动文档、看地图的直觉一致（往上拖地图，看到的是更南边）。
      */
     fun pan(deltaPx: Float, heightPx: Float) {
         if (heightPx <= 0f || deltaPx == 0f) return
@@ -61,8 +60,7 @@ class FrequencyRange internal constructor(
         val logMax = ln(max.toDouble()).toFloat()
         val span = logMax - logMin
         // 拖过整个绘图区的高度 = 走完一整个跨度的对数距离
-        // 取负号：手指向上（deltaPx < 0）→ 频率升高
-        val delta = -deltaPx * span / heightPx
+        val delta = deltaPx * span / heightPx
         shift(logMin + delta, logMax + delta, span)
     }
 

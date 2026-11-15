@@ -300,25 +300,46 @@ fun PitchCurve(
 }
 
 /**
- * 音域标签的纵向位置。
+ * 音域标签的纵向位置（文字顶边）。
  *
- * @param bandStart 音域下限（Hz）
- * @param bandEnd   音域上限（Hz）
- * @return 标签的 y 坐标；音域完全不在可见范围内时返回 null（不画标签）
+ * 色带是无限延伸的，所以标签有两种摆法：
+ * - 视野横跨分界线 → 贴着分界线（女声在上、男声在下）
+ * - 整个视野都在同一侧 → 贴在绘图区的上/下边缘
+ *
+ * @param female 要算女声标签（true）还是男声标签（false）
+ * @param splitY 分界线（147 Hz）的 y 坐标
+ * @param labelHeight 文字高度（px）
+ * @param gap 与分界线/边缘的间距（px）
+ * @return 标签顶边的 y；该音域完全不在视野内时返回 null（不画）
  */
 internal fun bandLabelY(
-    bandStart: Float,
-    bandEnd: Float,
+    female: Boolean,
     fMin: Float,
     fMax: Float,
+    splitY: Float,
     height: Float,
-): Float? {
-    // 只画和可见范围有交集的那一段
-    val visStart = maxOf(fMin, bandStart)
-    val visEnd = minOf(fMax, bandEnd)
-    if (visEnd <= visStart) return null
-    // 交集的高频端在上方
-    return yFor(visEnd, height, fMin, fMax)
+    labelHeight: Float,
+    gap: Float,
+): Float? = if (female) {
+    // 女声区在分界以上
+    if (fMax <= BandBoundaryHz) {
+        null
+    } else if (fMin >= BandBoundaryHz) {
+        // 整个视野都在女声区 → 贴顶部
+        gap
+    } else {
+        splitY - gap - labelHeight
+    }
+} else {
+    // 男声区在分界以下
+    if (fMin >= BandBoundaryHz) {
+        null
+    } else if (fMax <= BandBoundaryHz) {
+        // 整个视野都在男声区 → 贴底部
+        height - gap - labelHeight
+    } else {
+        splitY + gap
+    }
 }
 
 private fun DrawScope.drawBands(
@@ -330,34 +351,39 @@ private fun DrawScope.drawBands(
     fMax: Float,
     palette: VoicePalette,
 ) {
-    // 女声区
-    val femaleTop = yFor(FemaleRange.endInclusive, height, fMin, fMax)
-    val femaleBottom = yFor(FemaleRange.start, height, fMin, fMax)
+    // 男女声分界（D3 = 147 Hz）
+    val splitY = yFor(BandBoundaryHz, height, fMin, fMax)
+
+    // 色带是**无限延伸**的：分界以下整片男声区浅蓝，以上整片女声区浅粉。
+    //
+    // 之前色带是有限区间（82–147 / 147–255），滑到 255 Hz 以上时
+    // 两个色带都在视野外，整个绘图区变成一片空白——看着像坏了。
+    // 现在色带只回答"这里是男声还是女声"，具体落在哪个音区
+    // 由那三条标准边界线（82 / 147 / 255 Hz）标出。
     drawRect(
         color = palette.femaleBand,
-        topLeft = Offset(left, femaleTop),
-        size = Size(width, femaleBottom - femaleTop),
+        topLeft = Offset(left, 0f),
+        size = Size(width, splitY),
     )
-    // 男声区
-    val maleTop = yFor(MaleRange.endInclusive, height, fMin, fMax)
-    val maleBottom = yFor(MaleRange.start, height, fMin, fMax)
     drawRect(
         color = palette.maleBand,
-        topLeft = Offset(left, maleTop),
-        size = Size(width, maleBottom - maleTop),
+        topLeft = Offset(left, splitY),
+        size = Size(width, height - splitY),
     )
-    // 标签只在音域**可见**时画。
+    // 标签只在对应音域**可见**时画。
     //
-    // 之前是无条件画，位置取自 yFor(音域边界)。而 yFor 会把频率钳到
-    // [fMin, fMax]，所以范围滑到男声区以下时，"女声"标签会被放到画布
-    // **下方**——drawText 拿「画布尺寸 − 位置」当布局约束，算出负的
-    // maxHeight，直接抛 IllegalArgumentException 把 App 干翻。
-    bandLabelY(FemaleRange.start, FemaleRange.endInclusive, fMin, fMax, height)?.let { labelY ->
+    // 位置由 bandLabelY 算——它保证标签一定在画布内。
+    // （之前是无条件画、位置取自 yFor(音域边界)，而 yFor 会把频率钳到
+    //   可见范围，范围滑到音域外时标签会被放到画布**下方**，
+    //   drawText 算出负的布局约束，直接把 App 干翻。）
+    val labelHeight = 11f.dp.toPx()
+    val gap = 4f.dp.toPx()
+    bandLabelY(true, fMin, fMax, splitY, height, labelHeight, gap)?.let { labelY ->
         drawLabel(
             textMeasurer = textMeasurer,
             text = "女声",
             x = left + 8.dp.toPx(),
-            y = labelY + 5.dp.toPx(),
+            y = labelY,
             style = TextStyle(
                 fontSize = 10.sp,
                 color = palette.trace.copy(alpha = 0.9f),
@@ -365,12 +391,12 @@ private fun DrawScope.drawBands(
             ),
         )
     }
-    bandLabelY(MaleRange.start, MaleRange.endInclusive, fMin, fMax, height)?.let { labelY ->
+    bandLabelY(false, fMin, fMax, splitY, height, labelHeight, gap)?.let { labelY ->
         drawLabel(
             textMeasurer = textMeasurer,
             text = "男声",
             x = left + 8.dp.toPx(),
-            y = labelY + 5.dp.toPx(),
+            y = labelY,
             style = TextStyle(
                 fontSize = 10.sp,
                 color = palette.primaryInk.copy(alpha = 0.9f),

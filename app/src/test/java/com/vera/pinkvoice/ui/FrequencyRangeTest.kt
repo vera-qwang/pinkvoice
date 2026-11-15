@@ -14,22 +14,22 @@ class FrequencyRangeTest {
 
     private fun range() = FrequencyRange(80f, 270f)
 
-    /** 往上滑 → 看到更高的频率。 */
+    /** 往上滑 → 内容跟着上移 → 看到更低的频率。 */
     @Test
-    fun panUpShowsHigherFrequencies() {
+    fun panUpShowsLowerFrequencies() {
         val r = range()
         val before = r.min
         r.pan(deltaPx = -400f, heightPx = 1000f)
-        assertTrue("上滑后下限应该升高：${r.min} <= $before", r.min > before)
-        assertTrue("上滑后上限也应该升高：${r.max}", r.max > 270f)
+        assertTrue("上滑后下限应该降低：${r.min} >= $before", r.min < before)
+        assertTrue("上滑后上限也应该降低：${r.max}", r.max < 270f)
     }
 
-    /** 往下滑 → 看到更低的频率。 */
+    /** 往下滑 → 看到更高的频率。 */
     @Test
-    fun panDownShowsLowerFrequencies() {
+    fun panDownShowsHigherFrequencies() {
         val r = range()
         r.pan(deltaPx = 400f, heightPx = 1000f)
-        assertTrue("下滑后下限应该降低：${r.min}", r.min < 80f)
+        assertTrue("下滑后下限应该升高：${r.min}", r.min > 80f)
     }
 
     /**
@@ -60,7 +60,7 @@ class FrequencyRangeTest {
             270f / 80f,
             0.01f,
         )
-        assertTrue("整体应该上移了", r.min > 80f)
+        assertTrue("整体应该下移了（滑到更低的频率）", r.min < 80f)
         assertTrue("跨度（线性）会随平移变小", spanBefore > 0)
     }
 
@@ -172,70 +172,84 @@ class FrequencyRangeTest {
  */
 class BandLabelPositionTest {
 
+    private val height = 1000f
+    private val labelHeight = 30f
+    private val gap = 11f
+
+    /** 分界线在 147 Hz 上。 */
+    private fun splitY(fMin: Float, fMax: Float) =
+        yFor(147f, height, fMin, fMax)
+
+    /** 视野横跨分界线时，两个标签都该有。 */
     @Test
-    fun labelIsNullWhenBandNotVisible() {
-        // 范围完全在女声区之上 → 男声区不可见
-        assertEquals(
-            null,
-            bandLabelY(82f, 147f, 300f, 500f, 1000f),
+    fun bothLabelsVisibleWhenRangeSpansBoundary() {
+        val split = splitY(80f, 270f)
+        assertTrue("女声标签应该在", bandLabelY(true, 80f, 270f, split, height, labelHeight, gap) != null)
+        assertTrue("男声标签应该在", bandLabelY(false, 80f, 270f, split, height, labelHeight, gap) != null)
+    }
+
+    /** 视野完全在女声区 → 只有女声标签。 */
+    @Test
+    fun onlyFemaleLabelWhenRangeAboveBoundary() {
+        val split = splitY(200f, 400f)
+        assertTrue(
+            "女声标签应该在",
+            bandLabelY(true, 200f, 400f, split, height, labelHeight, gap) != null,
         )
-        // 范围完全在男声区之下 → 女声区不可见
         assertEquals(
+            "男声标签不该有",
             null,
-            bandLabelY(147f, 255f, 40f, 80f, 1000f),
+            bandLabelY(false, 200f, 400f, split, height, labelHeight, gap),
         )
     }
 
+    /** 视野完全在男声区 → 只有男声标签。 */
     @Test
-    fun labelYIsInsideCanvasWhenBandVisible() {
-        val height = 1000f
-        // 各种范围下，标签的 y 都必须在画布内
+    fun onlyMaleLabelWhenRangeBelowBoundary() {
+        val split = splitY(40f, 135f)
+        assertEquals(
+            "女声标签不该有",
+            null,
+            bandLabelY(true, 40f, 135f, split, height, labelHeight, gap),
+        )
+        assertTrue(
+            "男声标签应该在",
+            bandLabelY(false, 40f, 135f, split, height, labelHeight, gap) != null,
+        )
+    }
+
+    /** 标签位置必须始终在画布内——越界就是之前那个崩溃。 */
+    @Test
+    fun labelAlwaysInsideCanvas() {
         val ranges = listOf(
             40f to 80f,
             60f to 100f,
             80f to 270f,
             147f to 255f,
             200f to 500f,
-            300f to 1000f,
+            296f to 1000f,
             82f to 147f,
+            140f to 150f,
         )
         for ((lo, hi) in ranges) {
-            for (band in listOf(82f to 147f, 147f to 255f)) {
-                val y = bandLabelY(band.first, band.second, lo, hi, height)
-                if (y != null) {
-                    assertTrue(
-                        "范围 $lo–${hi} 音域 $band 的标签 y=$y 超出画布",
-                        y >= 0f && y <= height,
-                    )
-                }
-            }
-        }
-    }
-
-    /** 标签 + 5dp 偏移之后也不能越界——那正是崩溃的触发条件。 */
-    @Test
-    fun labelPlusOffsetStaysInsideCanvas() {
-        val height = 1000f
-        val offset = 5f * 2.75f  // 5dp ≈ 13.75px
-        for (lo in listOf(40f, 60f, 80f, 120f, 200f, 300f)) {
-            val hi = lo * 2.5f
-            for (band in listOf(82f to 147f, 147f to 255f)) {
-                val y = bandLabelY(band.first, band.second, lo, hi, height) ?: continue
+            val split = splitY(lo, hi)
+            for (female in listOf(true, false)) {
+                val y = bandLabelY(female, lo, hi, split, height, labelHeight, gap) ?: continue
                 assertTrue(
-                    "范围 $lo–${hi} 音域 $band 标签越界：${y + offset} > $height",
-                    y + offset <= height,
+                    "范围 $lo–$hi 标签 y=$y 超出画布",
+                    y >= 0f && y + labelHeight <= height,
                 )
             }
         }
     }
 
-    /** 音域只露出一条缝时，标签贴着可见的那一段。 */
+    /** 视野横跨分界线时，两个标签不能重叠。 */
     @Test
-    fun labelFollowsVisiblePartOfBand() {
-        // 只看得到女声区最下面一点点（247–255 Hz）
-        val y = bandLabelY(147f, 255f, 247f, 300f, 1000f)
-        assertTrue("应该能画出标签", y != null)
-        // 交集的高频端 255 Hz 应该在高频侧（y 更小）
-        assertTrue("标签应该贴着可见段的高频端", y!! < 1000f)
+    fun labelsDoNotOverlap() {
+        val split = splitY(80f, 270f)
+        val femaleY = bandLabelY(true, 80f, 270f, split, height, labelHeight, gap)!!
+        val maleY = bandLabelY(false, 80f, 270f, split, height, labelHeight, gap)!!
+        assertTrue("女声标签应该在分界线上方", femaleY + labelHeight <= split + gap)
+        assertTrue("男声标签应该在分界线下方", maleY >= split)
     }
 }
