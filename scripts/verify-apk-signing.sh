@@ -19,14 +19,34 @@ if [ -n "$REPO" ]; then
   GH_ARGS=(--repo "$REPO")
 fi
 
-APKSIGNER=""
-for d in "$ANDROID_HOME"/build-tools/*/apksigner "$HOME/Library/Android/sdk"/build-tools/*/apksigner; do
-  [ -x "$d" ] && APKSIGNER="$d"
-done
+# 找 apksigner。
+#
+# macOS 上 ANDROID_HOME 经常没设（只有 ANDROID_SDK_ROOT 或默认路径），
+# 而 'set -u' 下引用未定义变量会直接报错——所以每个引用都要带默认值。
+#
+# 取 build-tools 目录里版本号最高的那个。
+find_apksigner() {
+  local sdk
+  for sdk in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" "$HOME/Library/Android/sdk"; do
+    [ -n "$sdk" ] || continue
+    [ -d "$sdk/build-tools" ] || continue
+    local f
+    f="$(ls -1 "$sdk"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)"
+    if [ -n "$f" ] && [ -x "$f" ]; then
+      echo "$f"
+      return 0
+    fi
+  done
+  return 1
+}
+
+APKSIGNER="$(find_apksigner || true)"
 if [ -z "$APKSIGNER" ]; then
   echo "找不到 apksigner，先装 Android SDK build-tools" >&2
+  echo "（找过 ANDROID_HOME / ANDROID_SDK_ROOT / ~/Library/Android/sdk）" >&2
   exit 1
 fi
+echo "apksigner: $APKSIGNER"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
