@@ -104,9 +104,10 @@ fun PitchCurve(
                 .fillMaxSize()
                 .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen),
         ) {
-            val labelWidth = AXIS_WIDTH_DP.toPx()
-            val plotWidth = (size.width - labelWidth).coerceAtLeast(1f)
-            drawBands(textMeasurer, labelWidth, plotWidth, size.height, fMin, fMax, palette)
+            val plotLeft = LEFT_AXIS_DP.toPx()
+            val plotRight = (size.width - RIGHT_AXIS_DP.toPx()).coerceAtLeast(plotLeft + 1f)
+            val plotWidth = plotRight - plotLeft
+            drawBands(textMeasurer, plotLeft, plotWidth, size.height, fMin, fMax, palette)
 
             // 半音网格：每半音一条淡线，看得出当前唱在哪个音级。
             // 落在音域色带里的线要更淡，否则网格会盖住色带本身。
@@ -122,18 +123,18 @@ fun PitchCurve(
                 }
                 drawLine(
                     color = palette.grid.copy(alpha = alpha),
-                    start = Offset(labelWidth, y),
-                    end = Offset(size.width, y),
+                    start = Offset(plotLeft, y),
+                    end = Offset(plotRight, y),
                     strokeWidth = if (isOctave) 1.4f else 1f,
                 )
             }
 
-            // 全音标注：音名 + 频率。
+            // 全音标注：**音名在曲线区左边，频率在曲线区右边**。
             //
-            // 布局：音名靠坐标栏左边，频率**右对齐到曲线区边缘**。
-            // 两列之间不刻意留空隙——频率数字紧贴着曲线区起点，
-            // 音名紧贴着坐标栏起点，这样整栏读起来是紧凑的两列，
-            // 而不是"左一个数 + 右边一大片空白 + 右一个数"。
+            // 之前两者都挤在左侧一栏里：要么中间留大片空白，
+            // 要么挤成一团。现在左右分栏——左边一列音名贴着左边缘，
+            // 右边一列频率贴着右边缘，曲线区在中间。
+            // 两个数各自有稳定的对齐边，读起来是一行行"音名 → 频率"。
             //
             // 标签按所在音域着色：女声区粉色、男声区蓝色、其余中性灰。
             for (midi in midiRange(fMin, fMax)) {
@@ -153,7 +154,7 @@ fun PitchCurve(
                         fontWeight = if (isOctave) FontWeight.Bold else FontWeight.Normal,
                     ),
                 )
-                // 频率右对齐：数字的右边紧贴曲线区起点
+                // 频率右对齐到画布右边缘
                 val hzText = hz.roundToInt().toString()
                 val hzSize = textMeasurer.measure(
                     hzText,
@@ -162,7 +163,7 @@ fun PitchCurve(
                 drawText(
                     textMeasurer = textMeasurer,
                     text = hzText,
-                    topLeft = Offset(labelWidth - 2f - hzSize.width, y - 6.5f),
+                    topLeft = Offset(size.width - hzSize.width, y - 6.5f),
                     style = TextStyle(fontSize = 9.sp, color = palette.axisLabel),
                 )
             }
@@ -176,8 +177,9 @@ fun PitchCurve(
 
             val w = size.width
             val h = size.height
-            val plotLeft = AXIS_WIDTH_DP.toPx()
-            val plotWidth = (w - plotLeft).coerceAtLeast(1f)
+            val plotLeft = LEFT_AXIS_DP.toPx()
+            val plotRight = (w - RIGHT_AXIS_DP.toPx()).coerceAtLeast(plotLeft + 1f)
+            val plotWidth = plotRight - plotLeft
 
             val endNs = history.latestTimeNs - offsetMs * 1_000_000L
             val startNs = endNs - windowMs * 1_000_000L
@@ -227,7 +229,7 @@ fun PitchCurve(
                 drawLine(
                     color = palette.primaryInk.copy(alpha = 0.45f),
                     start = Offset(plotLeft, y),
-                    end = Offset(w, y),
+                    end = Offset(plotRight, y),
                     strokeWidth = 1.2.dp.toPx(),
                     pathEffect = PathEffect.dashPathEffect(
                         floatArrayOf(10f, 6f),
@@ -243,11 +245,15 @@ fun PitchCurve(
                 drawLine(
                     color = palette.primaryInk,
                     start = Offset(plotLeft, y),
-                    end = Offset(w, y),
+                    end = Offset(plotRight, y),
                     strokeWidth = 1.4.dp.toPx(),
                     pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 8f)),
                 )
-                drawCircle(palette.primaryInk, radius = 5.dp.toPx(), center = Offset(w - 6.dp.toPx(), y))
+                drawCircle(
+                    palette.primaryInk,
+                    radius = 5.dp.toPx(),
+                    center = Offset(plotRight - 6.dp.toPx(), y),
+                )
             }
         }
     }
@@ -300,8 +306,14 @@ private fun DrawScope.drawBands(
     )
 }
 
-/** 坐标栏宽度：音名 + 频率并排（dp）。 */
-private val AXIS_WIDTH_DP = 52.dp
+/**
+ * 坐标栏宽度：音名在曲线区左边，频率在曲线区右边。
+ *
+ * 左栏只放音名（"C4" 两个字符，10 sp 约 18 dp），
+ * 右栏只放频率（三位数，9 sp 约 20 dp）。
+ */
+private val LEFT_AXIS_DP = 22.dp
+private val RIGHT_AXIS_DP = 26.dp
 
 /** 自然音的半音偏移（C D E F G A B）。 */
 private val NATURAL_PITCH_CLASSES = intArrayOf(0, 2, 4, 5, 7, 9, 11)

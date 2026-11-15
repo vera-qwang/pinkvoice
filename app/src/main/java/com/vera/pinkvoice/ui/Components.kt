@@ -128,7 +128,6 @@ fun CentsGauge(
 fun LevelMeter(
     level: Float,
     modifier: Modifier = Modifier,
-    onSpeaker: Boolean = false,
 ) {
     val palette = LocalVoicePalette.current
     Canvas(modifier.width(8.dp).height(72.dp)) {
@@ -144,7 +143,7 @@ fun LevelMeter(
         if (ratio > 0f) {
             val fillH = h * ratio
             drawRoundRect(
-                color = if (onSpeaker) palette.offTune else palette.meterFill,
+                color = palette.meterFill,
                 topLeft = Offset(0f, h - fillH),
                 size = Size(w, fillH),
                 cornerRadius = CornerRadius(w / 2),

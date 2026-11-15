@@ -47,6 +47,18 @@ class VoiceEngine(
     private val preferredRate: Int = 48000,
     private val preferredAnalysisRate: Int = 16000,
 ) {
+    /**
+     * 是否启用返听（把麦克风声音播回去）。
+     *
+     * **没有外接耳机时必须关掉**：用手机内置扬声器返听，麦克风会拾取
+     * 自己的监听声形成正反馈啸叫，而且分析到的也是被延迟污染的声音。
+     * 与其限幅到 35% 还留着这个坑，不如直接不返听——只做音高监测。
+     *
+     * 引擎侧的表现是完全不创建 AudioTrack、不起返听线程，
+     * 连环形缓冲都不写。分析支路完全不受影响。
+     */
+    @Volatile
+    var monitoringEnabled: Boolean = true
     companion object {
         private const val TAG = "VoiceEngine"
         private const val IN_CHANNEL = AudioFormat.CHANNEL_IN_MONO
@@ -172,14 +184,19 @@ class VoiceEngine(
         runCatching { AutomaticGainControl.create(sessionId)?.setEnabled(false) }
         runCatching { NoiseSuppressor.create(sessionId)?.setEnabled(false) }
 
-        val minTrack = AudioTrack.getMinBufferSize(rate, OUT_CHANNEL, ENCODING)
-        if (minTrack <= 0) {
-            rec.release()
-            return "设备不支持 ${rate}Hz 单声道播放"
-        }
-        val trackBuf = maxOf(minTrack * 2, BLOCK_FRAMES * 8)
+        // 返听通道：只在允许返听时才创建。
+        // 没有外接设备时完全不创建 AudioTrack——省内存、省 CPU，
+        // 也从根本上杜绝了"内置扬声器拾取自己"的正反馈。
+        var track: AudioTrack? = null
+        if (monitoringEnabled) {
+            val minTrack = AudioTrack.getMinBufferSize(rate, OUT_CHANNEL, ENCODING)
+            if (minTrack <= 0) {
+                rec.release()
+                return "设备不支持 ${rate}Hz 单声道播放"
+            }
+            val trackBuf = maxOf(minTrack * 2, BLOCK_FRAMES * 8)
 
-        val track = try {
+            track = try {
             AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
@@ -194,18 +211,19 @@ class VoiceEngine(
                         .setChannelMask(OUT_CHANNEL)
                         .build()
                 )
-                .setBufferSizeInBytes(trackBuf)
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
-                .build()
-        } catch (e: Exception) {
-            rec.release()
-            return "播放通道创建失败：${e.message}"
-        }
-        if (track.state != AudioTrack.STATE_INITIALIZED) {
-            track.release()
-            rec.release()
-            return "播放通道初始化失败"
+                    .setBufferSizeInBytes(trackBuf)
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+                    .build()
+            } catch (e: Exception) {
+                rec.release()
+                return "播放通道创建失败：${e.message}"
+            }
+            if (track.state != AudioTrack.STATE_INITIALIZED) {
+                track.release()
+                rec.release()
+                return "播放通道初始化失败"
+            }
         }
 
         // ---- 全部就绪，正式开跑 ----
@@ -226,8 +244,8 @@ class VoiceEngine(
         yin!!.reset()
         history.clear()
         framesWritten.set(0)
-        track.setVolume(monitorGain)
-        track.play()
+        track?.setVolume(monitorGain)
+        track?.play()
         rec.startRecording()
 
         running = true
@@ -235,15 +253,19 @@ class VoiceEngine(
         Log.i(
             TAG,
             "start rate=$activeRate analysis=$activeAnalysisRate " +
-                "recBuf=${rec.bufferSizeInFrames} trackBuf=${track.bufferSizeInFrames}",
+                "recBuf=${rec.bufferSizeInFrames} " +
+                "trackBuf=${track?.bufferSizeInFrames ?: 0} " +
+                "monitor=${if (track != null) "on" else "off"}",
         )
         captureThread = Thread({ captureLoop(rec, rate, decimator!!, yin!!) }, "voice-capture").apply {
             priority = Thread.MAX_PRIORITY
             start()
         }
-        monitorThread = Thread({ monitorLoop(track) }, "voice-monitor").apply {
-            priority = Thread.MAX_PRIORITY
-            start()
+        if (track != null) {
+            monitorThread = Thread({ monitorLoop(track) }, "voice-monitor").apply {
+                priority = Thread.MAX_PRIORITY
+                start()
+            }
         }
         return null
     }
@@ -302,12 +324,15 @@ class VoiceEngine(
             totalRead += n
 
             // --- A. 直通返听（原始 PCM，不做任何处理） ---
-            for (i in 0 until n) {
-                val v = pcm[i].toInt()
-                bytes[i * 2] = (v and 0xFF).toByte()
-                bytes[i * 2 + 1] = ((v shr 8) and 0xFF).toByte()
+            // 不返听时整段跳过：省掉一次字节转换和一次环形缓冲写入。
+            if (player != null) {
+                for (i in 0 until n) {
+                    val v = pcm[i].toInt()
+                    bytes[i * 2] = (v and 0xFF).toByte()
+                    bytes[i * 2 + 1] = ((v shr 8) and 0xFF).toByte()
+                }
+                ring.write(bytes, 0, n * 2)
             }
-            ring.write(bytes, 0, n * 2)
 
             // --- B. 分析支路 ---
             for (i in 0 until n) floatsFull[i] = pcm[i] / 32768f
@@ -346,9 +371,11 @@ class VoiceEngine(
     private fun updateLatency(rec: AudioRecord, rate: Int, totalRead: Long) {
         val recTs = AudioTimestamp()
         val trackTs = AudioTimestamp()
-        val track = player ?: return
+        val track = player
         if (!timestampProbe.read(rec, recTs)) return
-        if (!track.getTimestamp(trackTs)) return
+        // 没有返听通道时（A2DP 之外的场景、或未连耳机）测不了输出延迟，
+        // 但采集与分析延迟照样要测——设置面板里要能看到。
+        if (track != null && !track.getTimestamp(trackTs)) return
 
         val now = System.nanoTime()
 
@@ -358,12 +385,17 @@ class VoiceEngine(
         val inputMs = (now - capturedNs) / 1_000_000f
 
         // 输出：刚刚写入的最后一帧会在 playPos + queued 之后被播放
-        val written = framesWritten.get()
-        val presentedNs = trackTs.nanoTime +
-            (written - trackTs.framePosition) * 1_000_000_000L / rate
-        // 取整后发布。启动瞬间的估计值可能是负的（AudioTimestamp 的帧位置
-        // 偶尔会跑在写入位置前面），负延迟没有物理意义，一律按 0 处理。
-        val outputMs = ((presentedNs - now) / 1_000_000f).coerceAtLeast(0f)
+        val outputMs = if (track == null) {
+            // 不返听 → 没有输出延迟
+            0f
+        } else {
+            val written = framesWritten.get()
+            val presentedNs = trackTs.nanoTime +
+                (written - trackTs.framePosition) * 1_000_000_000L / rate
+            // 取整后发布。启动瞬间的估计值可能是负的（AudioTimestamp 的帧位置
+            // 偶尔会跑在写入位置前面），负延迟没有物理意义，一律按 0 处理。
+            ((presentedNs - now) / 1_000_000f).coerceAtLeast(0f)
+        }
 
         // 测量本身每个音频块（21 ms）做一次，但**发布**要节流。
         //

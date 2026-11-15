@@ -130,14 +130,18 @@ fun VoiceScreen(
     var showSettings by remember { mutableStateOf(false) }
     var device by remember { mutableStateOf(AudioOutputInfo.current(audioManager)) }
 
-    // 外放时麦克风会拾取自己的监听声 -> 自激啸叫，音量必须限幅
-    val onSpeaker = device.kind == AudioOutputInfo.Kind.SPEAKER
-    val gainScale = if (onSpeaker) 0.35f else 1f
+    // **没有外接耳机就不返听**。
+    //
+    // 手机内置扬声器返听时，麦克风会拾取自己的监听声形成正反馈啸叫，
+    // 分析到的也是被延迟污染的声音。与其把音量限到 35% 还留着这个坑，
+    // 不如直接不返听——只做音高监测，接上耳机自动恢复。
+    val monitoringAvailable = device.kind != AudioOutputInfo.Kind.SPEAKER
 
     LaunchedEffect(running) {
         if (running) device = AudioOutputInfo.current(audioManager)
     }
-    LaunchedEffect(gain, gainScale) { engine.monitorGain = gain * gainScale }
+    LaunchedEffect(monitoringAvailable) { engine.monitoringEnabled = monitoringAvailable }
+    LaunchedEffect(gain) { engine.monitorGain = gain }
 
     // 视觉对齐量 = 输出延迟 - 分析延迟（推导见 README），蓝牙附加部分手动补
     //
@@ -257,7 +261,7 @@ fun VoiceScreen(
                 fontWeight = FontWeight.Bold,
             )
             Spacer(Modifier.weight(1f))
-            DeviceChip(device.kind, device.name, onSpeaker) { showSettings = true }
+            DeviceChip(device.kind, monitoringAvailable) { showSettings = true }
             IconButton(onClick = { showSettings = true }) {
                 Icon(
                     imageVector = Icons.Default.Settings,
@@ -311,7 +315,7 @@ fun VoiceScreen(
                         )
                     }
                     Spacer(Modifier.weight(1f))
-                    LevelMeter(readout.level, onSpeaker = onSpeaker)
+                    LevelMeter(readout.level)
                 }
                 CentsGauge(
                     cents = readout.cents,
@@ -425,8 +429,9 @@ fun VoiceScreen(
                 Text(
                     text = when {
                         running -> "停止监听"
-                        granted -> "开始监听 + 返听"
-                        else -> "授予麦克风权限"
+                        !granted -> "授予麦克风权限"
+                        monitoringAvailable -> "开始监听 + 返听"
+                        else -> "开始监听"
                     },
                     fontSize = 16.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -442,15 +447,21 @@ fun VoiceScreen(
                     SpeakerGlyph(color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        text = "返听 ${(gain * gainScale * 100).roundToInt()}%",
+                        text = if (monitoringAvailable) {
+                            "返听 ${(gain * 100).roundToInt()}%"
+                        } else {
+                            "返听不可用"
+                        },
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 Slider(
                     value = gain,
-                    onValueChange = { gain = it },
+                    // 返听不可用时滑块置灰不可拖——避免让人以为调了音量有效果
+                    onValueChange = { if (monitoringAvailable) gain = it },
                     valueRange = 0f..1f,
+                    enabled = monitoringAvailable,
                     colors = SliderDefaults.colors(
                         thumbColor = MaterialTheme.colorScheme.primary,
                         activeTrackColor = MaterialTheme.colorScheme.primary,
@@ -474,7 +485,7 @@ fun VoiceScreen(
             onDismiss = { showSettings = false },
             engine = engine,
             device = device,
-            onSpeaker = onSpeaker,
+            monitoringAvailable = monitoringAvailable,
             extraOffset = extraOffset,
             onExtraOffsetChange = { extraOffset = it },
             themeMode = themeMode,
@@ -502,40 +513,38 @@ val ThemeMode.displayName: String
         ThemeMode.Dark -> "深色"
     }
 
+/**
+ * 输出设备芯片。
+ *
+ * 用内置扬声器时显示"仅监测"——返听已经关掉了，这是状态而不是错误，
+ * 所以用中性色而不是红色警示。接上耳机就变回"蓝牙" / "有线"。
+ */
 @Composable
 private fun DeviceChip(
     kind: AudioOutputInfo.Kind,
-    name: String,
-    onSpeaker: Boolean,
+    monitoringAvailable: Boolean,
     onClick: () -> Unit,
 ) {
-    val palette = LocalVoicePalette.current
     val label = when (kind) {
         AudioOutputInfo.Kind.BLUETOOTH -> "蓝牙"
         AudioOutputInfo.Kind.WIRED -> "有线"
-        AudioOutputInfo.Kind.SPEAKER -> "外放"
+        AudioOutputInfo.Kind.SPEAKER -> "仅监测"
         AudioOutputInfo.Kind.OTHER -> "未知"
     }
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(12.dp))
-            .background(
-                if (onSpeaker) {
-                    palette.offTune.copy(alpha = 0.12f)
-                } else {
-                    MaterialTheme.colorScheme.surfaceVariant
-                },
-            )
+            .background(MaterialTheme.colorScheme.surfaceVariant)
             .clickable(onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        if (onSpeaker) {
+        if (!monitoringAvailable) {
             Icon(
                 imageVector = Icons.Default.Warning,
                 contentDescription = null,
-                tint = palette.offTune,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(14.dp),
             )
         }
@@ -543,7 +552,7 @@ private fun DeviceChip(
             text = label,
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
-            color = if (onSpeaker) palette.offTune else MaterialTheme.colorScheme.onSurfaceVariant,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
@@ -554,7 +563,7 @@ private fun SettingsSheet(
     onDismiss: () -> Unit,
     engine: VoiceEngine,
     device: AudioOutputInfo.Device,
-    onSpeaker: Boolean,
+    monitoringAvailable: Boolean,
     extraOffset: Float,
     onExtraOffsetChange: (Float) -> Unit,
     themeMode: ThemeMode,
@@ -643,28 +652,28 @@ private fun SettingsSheet(
             DetailRow("当前输出设备", device.name)
             DetailRow("返听丢样", "${dropped / 2} 帧")
 
-            // --- 外放提示 ---
-            if (onSpeaker) {
+            // --- 未接耳机提示 ---
+            if (!monitoringAvailable) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(14.dp))
-                        .background(palette.offTune.copy(alpha = 0.10f))
+                        .background(palette.meterTrack.copy(alpha = 0.45f))
                         .padding(12.dp),
                 ) {
                     Icon(
                         imageVector = Icons.Default.Warning,
                         contentDescription = null,
-                        tint = palette.offTune,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(16.dp),
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        text = "正在用手机扬声器返听：麦克风会拾取自己的声音形成啸叫，" +
-                            "曲线分析的也是延迟后的监听声。戴耳机即可解决；" +
-                            "外放时返听音量已自动限幅。",
+                        text = "没接耳机，已关闭返听：手机扬声器会把麦克风的声音" +
+                            "再播回来，形成啸叫。当前只做音高监测。" +
+                            "接上耳机或蓝牙耳机后自动恢复返听。",
                         fontSize = 12.sp,
-                        color = palette.offTune,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
