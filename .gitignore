@@ -1,0 +1,19 @@
+*.iml
+.gradle/
+.gradle-home/
+.kotlin/
+.local/
+.cxx/
+build/
+captures/
+.externalNativeBuild/
+.idea/
+*.hprof
+.emu-data/
+.avd-home/
+.android-home/
+.tmp/
+.DS_Store
+
+# 机器相关的 SDK 路径，由 Android Studio / gradlew 自动生成
+local.properties

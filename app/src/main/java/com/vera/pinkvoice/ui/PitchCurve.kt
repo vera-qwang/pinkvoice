@@ -1,0 +1,337 @@
+package com.vera.pinkvoice.ui
+
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.vera.pinkvoice.audio.PitchHistory
+import com.vera.pinkvoice.audio.PitchMath
+import kotlin.math.ln
+import kotlin.math.roundToInt
+
+/** 曲线重绘间隔：20 fps。曲线是慢变量，再快也看不出差别。 */
+private const val CURVE_FRAME_INTERVAL_NS = 50_000_000L
+
+/**
+ * 实时音高曲线。
+ *
+ * 纵轴为对数频率轴，横轴为时间；背景色带标出男声 / 女声参考音域，
+ * 右侧虚线 + 圆点指示"此刻听到"的音高。
+ *
+ * **分两层画**：静态层（色带 / 参考线 / 坐标标签）与动态层（曲线本体）。
+ * 静态层的内容一帧都不变，却要占掉每帧 5 次文字测量与 5 个图元绘制；
+ * 不读 tick 之后它只在自身参数变化时才重绘。
+ *
+ * @param offsetMs 视觉对齐偏移：曲线整体滞后多少毫秒，用来补偿
+ *   "采集 → 播放" 的延迟（蓝牙耳机通常额外 100~300 ms）。
+ * @param active 引擎是否在运行。为 false 时停止重绘，避免空闲时白烧 CPU。
+ */
+@Composable
+fun PitchCurve(
+    history: PitchHistory,
+    offsetMs: Long,
+    modifier: Modifier = Modifier,
+    windowMs: Long = CURVE_WINDOW_MS,
+    fMin: Float = 80f,
+    fMax: Float = 270f,
+    textMeasurer: TextMeasurer,
+    active: Boolean = true,
+    /**
+     * 窗口内的平均音高（Hz），用于画一条水平参考线。
+     * null 表示窗口内没有检测到音高，不画。
+     */
+    avgHz: Float? = null,
+) {
+    // 重绘心跳（数据本身由引擎线程写入，不走 Compose 状态）
+    //
+    // 只在引擎运行时跳。停止监听后曲线内容不变（引擎不清空历史），
+    // 留着最后一帧即可；继续空转的话，真机实测前台空闲要吃掉 90% CPU——
+    // 比真正跑分析还高。
+    val tick = remember { mutableLongStateOf(0L) }
+    LaunchedEffect(active) {
+        if (!active) {
+            tick.longValue++   // 补最后一帧，保证停机瞬间的状态被画出来
+            return@LaunchedEffect
+        }
+        var last = 0L
+        while (true) {
+            withFrameNanos {
+                // 限速 20 fps。本机屏幕是 120 Hz，不限速就是每秒 120 次重组；
+                // 实测 30 fps → 20 fps 省约 12% CPU，曲线平滑度看不出差别。
+                if (it - last >= CURVE_FRAME_INTERVAL_NS) {
+                    last = it
+                    tick.longValue = it
+                }
+            }
+        }
+    }
+
+    val palette = LocalVoicePalette.current
+
+    // 复用缓冲，避免每帧分配（remember 必须在 composable 层，不能放进 DrawScope）
+    val outT = remember { LongArray(4096) }
+    val outHz = remember { FloatArray(4096) }
+    val outClarity = remember { FloatArray(4096) }
+    val outRms = remember { FloatArray(4096) }
+
+    Box(modifier) {
+        // ---- 静态层：音域色带 / 半音辅助线 / 音名 + 频率 ----
+        // 不读 tick，因此只在自身参数变化时才重绘。
+        // 再用 graphicsLayer 把它提升成独立硬件层：内容不变时合成器直接复用
+        // 上一帧的纹理，不必每帧重新上传。
+        Canvas(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen),
+        ) {
+            val labelWidth = AXIS_WIDTH_DP.toPx()
+            val plotWidth = (size.width - labelWidth).coerceAtLeast(1f)
+            drawBands(textMeasurer, labelWidth, plotWidth, size.height, fMin, fMax, palette)
+
+            // 半音网格：每半音一条淡线，看得出当前唱在哪个音级。
+            // 落在音域色带里的线要更淡，否则网格会盖住色带本身。
+            for (midi in midiRange(fMin, fMax)) {
+                val hz = PitchMath.midiToHz(midi).toFloat()
+                val y = yFor(hz, size.height, fMin, fMax)
+                val isOctave = midi % 12 == 0
+                val inBand = hz in MaleRange || hz in FemaleRange
+                val alpha = when {
+                    isOctave -> if (inBand) 0.55f else 1f
+                    inBand -> 0.18f
+                    else -> 0.45f
+                }
+                drawLine(
+                    color = palette.grid.copy(alpha = alpha),
+                    start = Offset(labelWidth, y),
+                    end = Offset(size.width, y),
+                    strokeWidth = if (isOctave) 1.4f else 1f,
+                )
+            }
+
+            // 全音标注：音名 + 频率。
+            //
+            // 布局：音名靠坐标栏左边，频率**右对齐到曲线区边缘**。
+            // 两列之间不刻意留空隙——频率数字紧贴着曲线区起点，
+            // 音名紧贴着坐标栏起点，这样整栏读起来是紧凑的两列，
+            // 而不是"左一个数 + 右边一大片空白 + 右一个数"。
+            //
+            // 标签按所在音域着色：女声区粉色、男声区蓝色、其余中性灰。
+            for (midi in midiRange(fMin, fMax)) {
+                if (!isWholeTone(midi)) continue
+                val hz = PitchMath.midiToHz(midi)
+                val y = yFor(hz.toFloat(), size.height, fMin, fMax)
+                val color = bandColorOf(hz.toFloat(), palette)
+                val isOctave = midi % 12 == 0
+
+                drawText(
+                    textMeasurer = textMeasurer,
+                    text = PitchMath.midiToName(midi),
+                    topLeft = Offset(0f, y - 7f),
+                    style = TextStyle(
+                        fontSize = 10.sp,
+                        color = color,
+                        fontWeight = if (isOctave) FontWeight.Bold else FontWeight.Normal,
+                    ),
+                )
+                // 频率右对齐：数字的右边紧贴曲线区起点
+                val hzText = hz.roundToInt().toString()
+                val hzSize = textMeasurer.measure(
+                    hzText,
+                    TextStyle(fontSize = 9.sp, color = palette.axisLabel),
+                ).size
+                drawText(
+                    textMeasurer = textMeasurer,
+                    text = hzText,
+                    topLeft = Offset(labelWidth - 2f - hzSize.width, y - 6.5f),
+                    style = TextStyle(fontSize = 9.sp, color = palette.axisLabel),
+                )
+            }
+        }
+
+        // ---- 动态层：曲线本体 + 当前音高指示 ----
+        Canvas(Modifier.fillMaxSize()) {
+            // 依赖 tick，保证每帧重绘
+            @Suppress("UNUSED_EXPRESSION")
+            tick.longValue
+
+            val w = size.width
+            val h = size.height
+            val plotLeft = AXIS_WIDTH_DP.toPx()
+            val plotWidth = (w - plotLeft).coerceAtLeast(1f)
+
+            val endNs = history.latestTimeNs - offsetMs * 1_000_000L
+            val startNs = endNs - windowMs * 1_000_000L
+
+            val n = history.copyRange(startNs, endNs, outT, outHz, outClarity, outRms)
+            if (n > 0) {
+                val path = Path()
+                var started = false
+                var lastT = 0L
+                for (i in 0 until n) {
+                    val t = outT[i]
+                    val hz = outHz[i]
+                    val cl = outClarity[i]
+                    val x = plotLeft + plotWidth *
+                        ((t - startNs).toFloat() / (windowMs * 1_000_000f)).coerceIn(0f, 1f)
+                    if (hz <= 0f || cl < 0.3f) {
+                        started = false
+                        continue
+                    }
+                    val y = yFor(hz, h, fMin, fMax)
+                    // 时间上出现大跳变说明中间断了（清音/无声），断开曲线
+                    if (started && t - lastT > 120_000_000L) started = false
+                    if (!started) {
+                        path.moveTo(x, y)
+                        started = true
+                    } else {
+                        path.lineTo(x, y)
+                    }
+                    lastT = t
+                }
+                // 底下垫一层宽而淡的描边，做出发光感
+                drawPath(
+                    path = path,
+                    color = palette.trace.copy(alpha = 0.18f),
+                    style = Stroke(width = 9.dp.toPx()),
+                )
+                drawPath(
+                    path = path,
+                    color = palette.trace,
+                    style = Stroke(width = 2.6.dp.toPx()),
+                )
+            }
+
+            // 窗口平均音高参考线：练声时能一眼看出"我整体在多高"
+            if (avgHz != null && avgHz > 0f) {
+                val y = yFor(avgHz, h, fMin, fMax)
+                drawLine(
+                    color = palette.primaryInk.copy(alpha = 0.45f),
+                    start = Offset(plotLeft, y),
+                    end = Offset(w, y),
+                    strokeWidth = 1.2.dp.toPx(),
+                    pathEffect = PathEffect.dashPathEffect(
+                        floatArrayOf(10f, 6f),
+                        phase = 0f,
+                    ),
+                )
+            }
+
+            // 右侧当前音高指示（取"此刻听到"的那一点）
+            val heard = history.sampleAt(endNs)
+            if (heard != null && heard.hz > 0f && heard.clarity >= 0.3f) {
+                val y = yFor(heard.hz, h, fMin, fMax)
+                drawLine(
+                    color = palette.primaryInk,
+                    start = Offset(plotLeft, y),
+                    end = Offset(w, y),
+                    strokeWidth = 1.4.dp.toPx(),
+                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 8f)),
+                )
+                drawCircle(palette.primaryInk, radius = 5.dp.toPx(), center = Offset(w - 6.dp.toPx(), y))
+            }
+        }
+    }
+}
+
+private fun DrawScope.drawBands(
+    textMeasurer: TextMeasurer,
+    left: Float,
+    width: Float,
+    height: Float,
+    fMin: Float,
+    fMax: Float,
+    palette: VoicePalette,
+) {
+    // 女声区
+    val femaleTop = yFor(FemaleRange.endInclusive, height, fMin, fMax)
+    val femaleBottom = yFor(FemaleRange.start, height, fMin, fMax)
+    drawRect(
+        color = palette.femaleBand,
+        topLeft = Offset(left, femaleTop),
+        size = Size(width, femaleBottom - femaleTop),
+    )
+    // 男声区
+    val maleTop = yFor(MaleRange.endInclusive, height, fMin, fMax)
+    val maleBottom = yFor(MaleRange.start, height, fMin, fMax)
+    drawRect(
+        color = palette.maleBand,
+        topLeft = Offset(left, maleTop),
+        size = Size(width, maleBottom - maleTop),
+    )
+    drawText(
+        textMeasurer = textMeasurer,
+        text = "女声",
+        topLeft = Offset(left + 8.dp.toPx(), femaleTop + 5.dp.toPx()),
+        style = TextStyle(
+            fontSize = 10.sp,
+            color = palette.trace.copy(alpha = 0.9f),
+            fontWeight = FontWeight.Medium,
+        ),
+    )
+    drawText(
+        textMeasurer = textMeasurer,
+        text = "男声",
+        topLeft = Offset(left + 8.dp.toPx(), maleTop + 5.dp.toPx()),
+        style = TextStyle(
+            fontSize = 10.sp,
+            color = palette.primaryInk.copy(alpha = 0.9f),
+            fontWeight = FontWeight.Medium,
+        ),
+    )
+}
+
+/** 坐标栏宽度：音名 + 频率并排（dp）。 */
+private val AXIS_WIDTH_DP = 52.dp
+
+/** 自然音的半音偏移（C D E F G A B）。 */
+private val NATURAL_PITCH_CLASSES = intArrayOf(0, 2, 4, 5, 7, 9, 11)
+
+private fun isWholeTone(midi: Int): Boolean = midi % 12 in NATURAL_PITCH_CLASSES
+
+/** 落在 [fMin, fMax] 内的所有半音的 MIDI 号。 */
+private fun midiRange(fMin: Float, fMax: Float): IntRange {
+    val lo = kotlin.math.ceil(PitchMath.hzToMidi(fMin.toDouble())).toInt()
+    val hi = kotlin.math.floor(PitchMath.hzToMidi(fMax.toDouble())).toInt()
+    return lo..hi
+}
+
+/**
+ * 某个频率所在音域的标签色。
+ *
+ * 女声区优先判定：分界线 165 Hz 归粉色区，所以 E3（164.8 Hz）算蓝色、
+ * F3（174.6 Hz）算粉色，与色带画出来的边界一致。
+ *
+ * 坐标轴刻度和读数卡的大音名共用这个判定，两处颜色永远一致。
+ */
+internal fun bandColorOf(hz: Float, palette: VoicePalette): Color = when {
+    hz in FemaleRange -> palette.trace
+    hz in MaleRange -> palette.primaryInk
+    else -> palette.axisLabel
+}
+
+/** 对数频率轴：频率越高越靠上。 */
+internal fun yFor(hz: Float, height: Float, fMin: Float, fMax: Float): Float {
+    val l = ln(hz.coerceIn(fMin, fMax).toDouble())
+    val t = ((l - ln(fMin.toDouble())) / (ln(fMax.toDouble()) - ln(fMin.toDouble()))).toFloat()
+    return height - t * height
+}
