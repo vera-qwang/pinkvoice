@@ -680,8 +680,8 @@ private fun SettingsSheet(
             // --- 频率范围 ---
             SectionLabel("频率范围")
             Text(
-                text = "在曲线上**上下滑动**可以调整可见的频率范围，" +
-                    "**双指捏合**可以缩放。默认覆盖 80–270 Hz，" +
+                text = "在曲线上「上下滑动」可以调整可见的频率范围，" +
+                    "「双指捏合」可以缩放。默认覆盖 80–270 Hz，" +
                     "也就是男声区和女声区。改过的范围点一下右下角就能复位。",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
