@@ -422,7 +422,8 @@ fun VoiceScreen(
                             .fillMaxSize()
                             // 下边距给最下面那条音名标签留位：
                             // 标签画在 y-7px 处、字高约 27px，会往下探出绘图区一点。
-                            .padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 10.dp),
+                            // 只留 2 dp——标签探出去的部分不多，留多了底部空一截。
+                            .padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 2.dp),
                         textMeasurer = textMeasurer,
                         active = running,
                         avgHz = readout.avgHz,
@@ -440,7 +441,7 @@ fun VoiceScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         // 与绘图区左缘对齐（卡片内边距 14 + 坐标栏 22）
-                        .padding(start = 36.dp, end = 16.dp, top = 2.dp, bottom = 6.dp),
+                        .padding(start = 36.dp, end = 16.dp, top = 0.dp, bottom = 0.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
