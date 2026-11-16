@@ -54,6 +54,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -135,6 +136,10 @@ fun VoiceScreen(
     val freqRange = rememberFrequencyRange()
     // 返听降噪强度：只影响耳朵里听到的，不影响曲线
     var noiseLevel by remember { mutableFloatStateOf(0f) }
+    // 回放窗口长度（秒）
+    var replayWindow by remember { mutableIntStateOf(VoiceEngine.DEFAULT_REPLAY_SECONDS) }
+    // 当前是否正在回放
+    val replaying = engine.replaying.collectAsState().value
     var showSettings by remember { mutableStateOf(false) }
     var device by remember { mutableStateOf(AudioOutputInfo.current(audioManager)) }
 
@@ -190,6 +195,7 @@ fun VoiceScreen(
     }
     LaunchedEffect(gain) { engine.monitorGain = gain }
     LaunchedEffect(noiseLevel) { engine.noiseReductionLevel = noiseLevel }
+    LaunchedEffect(replayWindow) { engine.replayWindowSeconds = replayWindow }
 
     // 视觉对齐量 = 输出延迟 - 分析延迟（推导见 README），蓝牙附加部分手动补
     //
@@ -506,6 +512,41 @@ fun VoiceScreen(
                 )
             }
 
+            // 回放：监听中才有意义（没录到东西可放）
+            if (running) {
+                Button(
+                    onClick = {
+                        if (replaying) engine.stopReplay() else engine.startReplay()
+                    },
+                    // 扬声器模式也能回放——回放是播放**已经录下的**声音，
+                    // 不会形成正反馈啸叫（实时返听才有那个问题）。
+                    enabled = true,
+                    modifier = Modifier
+                        .width(96.dp)
+                        .height(54.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (replaying) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant
+                        },
+                        contentColor = if (replaying) {
+                            MaterialTheme.colorScheme.onPrimary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    ),
+                ) {
+                    Text(
+                        text = if (replaying) "■ 停止" else "▶ 回放",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                    )
+                }
+            }
+
             // 返听音量
             Column(
                 modifier = Modifier.width(136.dp),
@@ -558,6 +599,8 @@ fun VoiceScreen(
             onThemeModeChange = onThemeModeChange,
             noiseLevel = noiseLevel,
             onNoiseLevelChange = { noiseLevel = it },
+            replayWindow = replayWindow,
+            onReplayWindowChange = { replayWindow = it },
         )
     }
 }
@@ -644,6 +687,8 @@ private fun SettingsSheet(
     onThemeModeChange: (ThemeMode) -> Unit,
     noiseLevel: Float,
     onNoiseLevelChange: (Float) -> Unit,
+    replayWindow: Int,
+    onReplayWindowChange: (Int) -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val palette = LocalVoicePalette.current
@@ -744,6 +789,33 @@ private fun SettingsSheet(
                 )
             }
 
+            // --- 回放 ---
+            SectionLabel("回放")
+            Text(
+                text = "回放最近录下的一段。音频只存在内存里，" +
+                    "关掉 App 就没了——不落盘、不上传。",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                REPLAY_WINDOW_OPTIONS.forEachIndexed { index, seconds ->
+                    SegmentedButton(
+                        selected = replayWindow == seconds,
+                        onClick = { onReplayWindowChange(seconds) },
+                        shape = SegmentedButtonDefaults.itemShape(
+                            index = index,
+                            count = REPLAY_WINDOW_OPTIONS.size,
+                        ),
+                        colors = SegmentedButtonDefaults.colors(
+                            activeContainerColor = MaterialTheme.colorScheme.primary,
+                            activeContentColor = MaterialTheme.colorScheme.onPrimary,
+                        ),
+                    ) {
+                        Text("${seconds}秒")
+                    }
+                }
+            }
+
             // --- 视觉对齐 ---
             SectionLabel("视觉对齐")
             Text(
@@ -831,6 +903,9 @@ private fun rmsToRatio(rms: Float): Float {
  * 底噪在 -60 dB 附近（真机实测静音时 rms ≈ 0.0009 → -61 dB），
  * 所以下限取 -60 dB：再往下都是底噪，显示出来没有意义。
  */
+/** 回放窗口的可选长度（秒）。 */
+private val REPLAY_WINDOW_OPTIONS = intArrayOf(5, 10, 20)
+
 /**
  * 降噪强度对应的门限（dBFS）。
  *

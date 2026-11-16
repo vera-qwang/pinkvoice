@@ -67,6 +67,20 @@ class VoiceEngine(
         private const val RING_BYTES = 256 * 1024
         private const val BLOCK_FRAMES = 1024
 
+        /**
+         * 录音缓冲的最大长度（秒）。
+         *
+         * 48 kHz 单声道 PCM16 = 96 KB/s，30 秒约 2.9 MB。
+         * 全程只在堆内存里，不落盘、不上传。
+         */
+        private const val MAX_RECORD_SECONDS = 30
+
+        /** 回放窗口的默认值（秒）。 */
+        const val DEFAULT_REPLAY_SECONDS = 10
+
+        /** 回放窗口的下限（秒）。太短了听不出什么。 */
+        const val MIN_REPLAY_SECONDS = 3
+
         /** 延迟 / 丢样的发布间隔（纳秒）。 */
         private const val PUBLISH_INTERVAL_NS = 125_000_000L
 
@@ -93,10 +107,43 @@ class VoiceEngine(
     private val _droppedBytes = MutableStateFlow(0L)
     val droppedBytes: StateFlow<Long> = _droppedBytes.asStateFlow()
 
+    /**
+     * 回放窗口长度（秒）：按下回放时播放"最近这么多秒"。
+     */
+    @Volatile
+    var replayWindowSeconds: Int = DEFAULT_REPLAY_SECONDS
+        set(value) {
+            field = value.coerceIn(MIN_REPLAY_SECONDS, MAX_RECORD_SECONDS)
+        }
+
+    private val _replaying = MutableStateFlow(false)
+
+    /** 当前是否正在回放。 */
+    val replaying: StateFlow<Boolean> = _replaying.asStateFlow()
+
     /** 供 UI 绘制的音高历史（引擎线程写，UI 线程读）。 */
     val history = PitchHistory(capacity = 4096)
 
     private val ring = PcmRingBuffer(RING_BYTES)
+
+    /**
+     * 内存录音缓冲——**只活在 RAM 里**，App 一停就消失。
+     *
+     * 采集线程写，UI 线程在按下"回放"时取快照。
+     */
+    private val audioRecorder = AudioMemoryRecorder(MAX_RECORD_SECONDS * 48_000 * 2)
+
+    /**
+     * 回放缓冲：持有当前正在播放的快照。
+     *
+     * 状态机（挂快照 → 播 → 结束）全在 [ReplayBuffer] 里，
+     * 这样竞态最容易出错的那段可以用单元测试覆盖。
+     */
+    private val replay = ReplayBuffer(MAX_RECORD_SECONDS * 48_000 * 2)
+
+    /** 保护回放状态机的切换。 */
+    private val replayLock = Any()
+
     private val framesWritten = AtomicLong(0)
     private val timestampProbe = TimestampProbe()
 
@@ -107,7 +154,22 @@ class VoiceEngine(
     private var analysisDelayInputSamples = 0
 
     private var recorder: AudioRecord? = null
+
+    @Volatile
     private var player: AudioTrack? = null
+
+    /**
+     * 播放通道当前是不是在做**实时返听**。
+     *
+     * false = 这个 AudioTrack 只是为"回放"临时建的（扬声器模式：
+     * 没有耳机，不做实时返听避免啸叫，但回放还是要能出声）。
+     *
+     * 区分这个是为了回放结束后的收尾：
+     * - true  → 回到实时返听，线程继续跑
+     * - false → 没有实时返听可恢复，线程退出
+     */
+    @Volatile
+    private var liveMonitorOn = false
 
     /** 返听降噪器（噪声门 + 高通）。 */
     private var noiseGate: NoiseGate? = null
@@ -226,6 +288,7 @@ class VoiceEngine(
 
         recorder = rec
         player = track
+        liveMonitorOn = track != null
         ring.clear()
         noiseGate?.reset()
         decimator!!.reset()
@@ -259,6 +322,72 @@ class VoiceEngine(
     }
 
     /**
+     * 回放最近 [replayWindowSeconds] 秒。
+     *
+     * 走的是**同一个 AudioTrack**——回放期间把喂给它的数据源从
+     * "实时环形缓冲"换成"回放快照"，实时返听自然就停了。
+     *
+     * 另开一个 AudioTrack 的话，蓝牙耳机下会出现两个流抢输出设备，
+     * 切换延迟、音量打架都是麻烦。
+     *
+     * @return 是否真的开始回放（没在监听 / 没录音 / 没耳机时返回 false）
+     */
+    fun startReplay(): Boolean {
+        if (!running) return false
+        if (replay.active) return false
+
+        // 先取快照。取不到就什么都别做——
+        // 建了通道再发现没东西可放，白白占一个 AudioTrack。
+        val bytesPerSecond = activeRate * 2
+        val want = (replayWindowSeconds * bytesPerSecond)
+            .coerceAtMost(audioRecorder.availableBytes())
+        if (want <= 0) return false
+        val data = ByteArray(want)
+        val got = audioRecorder.snapshotRecent(data, 0, want)
+        if (got <= 0) return false
+
+        // 通道：耳机模式下它已经在做实时返听（直接复用），
+        // 扬声器模式下它是新建的、只为回放而存在。
+        val track = ensureTrack() ?: return false
+
+        // **先把快照挂上，再拉线程。**
+        //
+        // 顺序反了会出事：扬声器模式下返听线程看到"没有快照且没有实时返听"
+        // 就会认为没数据可喂、直接退出——如果线程比快照先就位，
+        // 回放会静默地什么都不响。
+        replay.begin(data)
+        _replaying.value = true
+        syncMonitorThread()
+        Log.i(TAG, "REPLAY start ms=${got * 1000 / (activeRate * 2)} avail=${audioRecorder.availableBytes()}")
+        return true
+    }
+
+    /**
+     * 停止回放，回到实时返听。
+     *
+     * 实时环形缓冲会被清空——不然回放结束后会接着播 2.7 秒前的旧声音，
+     * 听起来像"延迟了一下才恢复"。
+     */
+    fun stopReplay() {
+        finishReplay()
+        Log.i(TAG, "REPLAY stop")
+    }
+
+    /**
+     * 回放结束的收尾：清掉快照、恢复状态。
+     *
+     * 实时环形缓冲也清掉——不然回放结束后会接着播 2.7 秒前的旧声音，
+     * 听起来像"延迟了一下才恢复"。
+     */
+    private fun finishReplay() {
+        synchronized(replayLock) {
+            replay.finish()
+            _replaying.value = false
+            ring.clear()
+        }
+    }
+
+    /**
      * 运行时切换返听。
      *
      * 蓝牙耳机被拔掉时必须**立刻**关掉返听——否则声音会从手机扬声器播出来，
@@ -271,23 +400,64 @@ class VoiceEngine(
         if (!running) return
 
         if (enabled) {
-            val track = createTrack(activeRate)
+            // 复用已有的通道——扬声器模式下回放建的通道在这儿接上，
+            // 不能再建一个：两个 AudioTrack 会抢输出设备，而且原来的会泄漏。
+            val track = ensureTrack()
             if (track == null) {
                 monitoringEnabled = false
                 Log.w(TAG, "运行时开启返听失败，保持关闭")
                 return
             }
-            player = track
             track.setVolume(monitorGain)
-            track.play()
-            startMonitorThread(track)
+            liveMonitorOn = true
+            syncMonitorThread()
             Log.i(TAG, "monitoring enabled at runtime")
         } else {
-            stopMonitorThread()
-            runCatching { player?.stop() }
-            runCatching { player?.release() }
-            player = null
+            liveMonitorOn = false
+            if (replay.active) {
+                // 回放还在进行，通道得留着（线程继续把快照播完）
+                syncMonitorThread()
+            } else {
+                stopMonitorThread()
+                runCatching { player?.stop() }
+                runCatching { player?.release() }
+                player = null
+            }
             Log.i(TAG, "monitoring disabled at runtime")
+        }
+    }
+
+    /**
+     * 拿到播放通道，没有就建一个。
+     *
+     * **始终只有一个 AudioTrack**——耳机模式下它做实时返听，
+     * 扬声器模式下它做回放，同一个通道在不同时间干不同的事。
+     */
+    private fun ensureTrack(): AudioTrack? {
+        player?.let { return it }
+        val track = createTrack(activeRate) ?: return null
+        player = track
+        return track
+    }
+
+    /**
+     * 让返听线程和播放通道的状态对上。
+     *
+     * 线程存在的条件：通道在，而且**要么**在实时返听**要么**在回放。
+     * 两者都没有 → 线程退出、通道暂停（但不释放，
+     * 下次回放还能复用，也避免和"建新通道"抢同一个对象）。
+     */
+    private fun syncMonitorThread() {
+        val track = player
+        val need = track != null && (liveMonitorOn || replay.active)
+        val alive = monitorThread?.isAlive == true
+        if (need && !alive) {
+            track!!.setVolume(monitorGain)
+            track.play()
+            startMonitorThread(track)
+        } else if (!need && alive) {
+            stopMonitorThread()
+            runCatching { track?.pause() }
         }
     }
 
@@ -341,6 +511,8 @@ class VoiceEngine(
     fun stop() {
         if (!running && recorder == null) return
         running = false
+        replay.finish()
+        _replaying.value = false
         captureThread?.join(500)
         stopMonitorThread()
         captureThread = null
@@ -394,21 +566,33 @@ class VoiceEngine(
             // 浮点化——返听和分析共用这一份，省一次转换
             for (i in 0 until n) floatsFull[i] = pcm[i] / 32768f
 
-            // --- A. 返听（可选降噪） ---
-            // 不返听时整段跳过：省掉一次字节转换和一次环形缓冲写入。
-            if (player != null) {
-                val gate = noiseGate
-                if (gate != null && noiseReductionLevel > 0f) {
-                    gate.process(floatsFull, n, floatsMonitor)
-                } else {
-                    System.arraycopy(floatsFull, 0, floatsMonitor, 0, n)
-                }
-                for (i in 0 until n) {
-                    val v = (floatsMonitor[i] * 32768f).toInt().coerceIn(-32768, 32767)
-                    bytes[i * 2] = (v and 0xFF).toByte()
-                    bytes[i * 2 + 1] = ((v shr 8) and 0xFF).toByte()
-                }
-                
+            // --- A. 降噪 + 转字节 ---
+            // 返听和录音共用这一份：录的是**降噪之后**的信号，
+            // 回放时听到的应该和当时实时返听里听到的一致，
+            // 否则"回放"没法拿来对比。
+            val gate = noiseGate
+            if (gate != null && noiseReductionLevel > 0f) {
+                gate.process(floatsFull, n, floatsMonitor)
+            } else {
+                System.arraycopy(floatsFull, 0, floatsMonitor, 0, n)
+            }
+            for (i in 0 until n) {
+                val v = (floatsMonitor[i] * 32768f).toInt().coerceIn(-32768, 32767)
+                bytes[i * 2] = (v and 0xFF).toByte()
+                bytes[i * 2 + 1] = ((v shr 8) and 0xFF).toByte()
+            }
+
+            // --- B. 录音（内存，供"回放"用） ---
+            //
+            // 回放期间**不录**：扬声器模式下播放的声音会被麦克风收进去，
+            // 录下来就是自己的回声。而且回放时用户多半在听，不唱。
+            if (!replay.active) {
+                audioRecorder.write(bytes, 0, n * 2)
+            }
+
+            // --- C. 实时返听 ---
+            // 只有耳机在当输出设备时才做（扬声器会啸叫）。
+            if (liveMonitorOn) {
                 ring.write(bytes, 0, n * 2)
             }
 
@@ -512,7 +696,33 @@ class VoiceEngine(
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         val buf = ByteArray(BLOCK_FRAMES * 4)
         while (running) {
-            val n = ring.read(buf, 0, buf.size)
+            // 扬声器模式：没有实时返听，也没有快照 → 没有数据可喂，
+            // 线程退出（播放通道留着，下次回放还能用）。
+            if (!replay.active && !liveMonitorOn) {
+                // 扬声器模式：播放通道只为回放而建，这里把它暂停。
+                //
+                // **不 release**——release 和"下一次回放新建通道"之间
+                // 有竞态：旧线程可能在 UI 线程建好新通道之后才走到这里，
+                // 把新通道给释放了。只 pause 就没这个问题，
+                // 通道留到 stop() 统一收。
+                runCatching { track.pause() }
+                Log.i(TAG, "REPLAY thread exit")
+                return
+            }
+            val n = if (replay.active) {
+                // 回放中：喂快照，不再喂实时环形缓冲——实时返听自然就停了。
+                val got = replay.read(buf)
+                if (got == 0) {
+                    // 快照播完 → 回到实时返听（扬声器模式下会在循环开头退出线程）
+                    finishReplay()
+                    Log.i(TAG, "REPLAY end")
+                    0
+                } else {
+                    got
+                }
+            } else {
+                ring.read(buf, 0, buf.size)
+            }
             if (n <= 0) {
                 try {
                     Thread.sleep(2)
@@ -521,7 +731,16 @@ class VoiceEngine(
                 }
                 continue
             }
-            val w = track.write(buf, 0, n, AudioTrack.WRITE_BLOCKING)
+            // 通道可能已经被释放了（stop() 和本线程有竞争）：
+            // WRITE_BLOCKING 卡在满缓冲上时，stop() 的 join 会超时，
+            // 然后通道被 release，这时 write 会抛 IllegalStateException。
+            // 捕获它、干净地退出线程，别让异常冒到线程外面。
+            val w = try {
+                track.write(buf, 0, n, AudioTrack.WRITE_BLOCKING)
+            } catch (e: IllegalStateException) {
+                Log.w(TAG, "播放通道已释放，返听线程退出：${e.message}")
+                return
+            }
             if (w > 0) framesWritten.addAndGet((w / 2).toLong())
         }
     }
