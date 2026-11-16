@@ -75,6 +75,7 @@ import androidx.compose.ui.unit.sp
 import com.vera.pinkvoice.audio.AudioOutputInfo
 import com.vera.pinkvoice.audio.EngineStatus
 import com.vera.pinkvoice.audio.LatencyInfo
+import com.vera.pinkvoice.audio.NoiseGate
 import com.vera.pinkvoice.audio.PitchMath
 import com.vera.pinkvoice.audio.VoiceEngine
 import kotlin.math.abs
@@ -132,6 +133,8 @@ fun VoiceScreen(
     var gain by remember { mutableFloatStateOf(0.55f) }
     // 频率轴的可见范围：曲线上滑动 / 双指缩放可以调
     val freqRange = rememberFrequencyRange()
+    // 返听降噪强度：只影响耳朵里听到的，不影响曲线
+    var noiseLevel by remember { mutableFloatStateOf(0f) }
     var showSettings by remember { mutableStateOf(false) }
     var device by remember { mutableStateOf(AudioOutputInfo.current(audioManager)) }
 
@@ -186,6 +189,7 @@ fun VoiceScreen(
         engine.applyMonitoringEnabled(monitoringAvailable)
     }
     LaunchedEffect(gain) { engine.monitorGain = gain }
+    LaunchedEffect(noiseLevel) { engine.noiseReductionLevel = noiseLevel }
 
     // 视觉对齐量 = 输出延迟 - 分析延迟（推导见 README），蓝牙附加部分手动补
     //
@@ -545,6 +549,8 @@ fun VoiceScreen(
             monitoringAvailable = monitoringAvailable,
             themeMode = themeMode,
             onThemeModeChange = onThemeModeChange,
+            noiseLevel = noiseLevel,
+            onNoiseLevelChange = { noiseLevel = it },
         )
     }
 }
@@ -629,6 +635,8 @@ private fun SettingsSheet(
     monitoringAvailable: Boolean,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
+    noiseLevel: Float,
+    onNoiseLevelChange: (Float) -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val palette = LocalVoicePalette.current
@@ -686,6 +694,42 @@ private fun SettingsSheet(
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            // --- 降噪 ---
+            SectionLabel("降噪")
+            Text(
+                text = "压掉返听里的环境底噪（空调、远处说话、风扇）。" +
+                    "只影响耳朵里听到的——曲线和读数仍然是真实的声音，" +
+                    "所以降噪不会让轻声唱的音高丢失。",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text = if (noiseLevel <= 0f) {
+                        "关闭"
+                    } else {
+                        "门限 ${noiseGateThresholdDb(noiseLevel).roundToInt()} dB"
+                    },
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.width(104.dp),
+                )
+                Slider(
+                    value = noiseLevel,
+                    onValueChange = onNoiseLevelChange,
+                    valueRange = 0f..1f,
+                    colors = SliderDefaults.colors(
+                        thumbColor = MaterialTheme.colorScheme.primary,
+                        activeTrackColor = MaterialTheme.colorScheme.primary,
+                    ),
+                    modifier = Modifier.weight(1f),
+                )
+            }
 
             // --- 视觉对齐 ---
             SectionLabel("视觉对齐")
@@ -774,6 +818,16 @@ private fun rmsToRatio(rms: Float): Float {
  * 底噪在 -60 dB 附近（真机实测静音时 rms ≈ 0.0009 → -61 dB），
  * 所以下限取 -60 dB：再往下都是底噪，显示出来没有意义。
  */
+/**
+ * 降噪强度对应的门限（dBFS）。
+ *
+ * 和 [com.vera.pinkvoice.audio.NoiseGate] 里的映射保持一致：
+ * 0 → -70 dB（等于不处理），1 → -25 dB。
+ */
+internal fun noiseGateThresholdDb(level: Float): Float =
+    NoiseGate.MIN_THRESHOLD_DB +
+        (NoiseGate.MAX_THRESHOLD_DB - NoiseGate.MIN_THRESHOLD_DB) * level.coerceIn(0f, 1f)
+
 private fun rmsToDb(rms: Float): Float =
     (20f * log10(max(rms, 1e-6f))).coerceAtLeast(-60f)
 

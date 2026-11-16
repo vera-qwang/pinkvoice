@@ -108,6 +108,9 @@ class VoiceEngine(
 
     private var recorder: AudioRecord? = null
     private var player: AudioTrack? = null
+
+    /** 返听降噪器（噪声门 + 高通）。 */
+    private var noiseGate: NoiseGate? = null
     private var captureThread: Thread? = null
     private var monitorThread: Thread? = null
 
@@ -119,6 +122,22 @@ class VoiceEngine(
         set(value) {
             field = value.coerceIn(0f, 1f)
             player?.setVolume(field)
+        }
+
+    /**
+     * 返听降噪强度，0..1。
+     *
+     * **只作用于返听通路**——分析支路保持原样：门限一刀切下去会把
+     * 轻声唱也切掉，曲线会断成一段段。曲线和读数永远反映真实的声音。
+     */
+    @Volatile
+    var noiseReductionLevel: Float = 0.0f
+        set(value) {
+            val c = value.coerceIn(0f, 1f)
+            if (c != field) {
+                field = c
+                noiseGate?.level = c
+            }
         }
 
     /** 当前实际使用的采样率（回退后可能不是首选值）。 */
@@ -187,6 +206,7 @@ class VoiceEngine(
         // 返听通道：只在允许返听时才创建。
         // 没有外接设备时完全不创建 AudioTrack——省内存、省 CPU，
         // 也从根本上杜绝了"内置扬声器拾取自己"的正反馈。
+        noiseGate = NoiseGate(rate).also { it.level = noiseReductionLevel }
         val track = if (monitoringEnabled) createTrack(rate) else null
         if (monitoringEnabled && track == null) {
             rec.release()
@@ -207,6 +227,7 @@ class VoiceEngine(
         recorder = rec
         player = track
         ring.clear()
+        noiseGate?.reset()
         decimator!!.reset()
         yin!!.reset()
         history.clear()
@@ -353,6 +374,7 @@ class VoiceEngine(
         val pcm = ShortArray(BLOCK_FRAMES)
         val bytes = ByteArray(BLOCK_FRAMES * 2)
         val floatsFull = FloatArray(BLOCK_FRAMES)
+        val floatsMonitor = FloatArray(BLOCK_FRAMES)
         val floatsAnalysis = FloatArray(activeAnalysisRate / 8)
 
         var totalRead = 0L
@@ -369,19 +391,28 @@ class VoiceEngine(
             }
             totalRead += n
 
-            // --- A. 直通返听（原始 PCM，不做任何处理） ---
+            // 浮点化——返听和分析共用这一份，省一次转换
+            for (i in 0 until n) floatsFull[i] = pcm[i] / 32768f
+
+            // --- A. 返听（可选降噪） ---
             // 不返听时整段跳过：省掉一次字节转换和一次环形缓冲写入。
             if (player != null) {
+                val gate = noiseGate
+                if (gate != null && noiseReductionLevel > 0f) {
+                    gate.process(floatsFull, n, floatsMonitor)
+                } else {
+                    System.arraycopy(floatsFull, 0, floatsMonitor, 0, n)
+                }
                 for (i in 0 until n) {
-                    val v = pcm[i].toInt()
+                    val v = (floatsMonitor[i] * 32768f).toInt().coerceIn(-32768, 32767)
                     bytes[i * 2] = (v and 0xFF).toByte()
                     bytes[i * 2 + 1] = ((v shr 8) and 0xFF).toByte()
                 }
+                
                 ring.write(bytes, 0, n * 2)
             }
 
             // --- B. 分析支路 ---
-            for (i in 0 until n) floatsFull[i] = pcm[i] / 32768f
             val m = decim.process(floatsFull, n, floatsAnalysis)
             if (m > 0) {
                 if (++sinceAnchor >= 8) {
