@@ -403,48 +403,54 @@ fun VoiceScreen(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             border = androidx.compose.foundation.BorderStroke(1.dp, palette.cardBorder),
         ) {
-            Box(Modifier.fillMaxSize()) {
-                PitchCurve(
-                    history = engine.history,
-                    offsetMs = engine.autoOffsetMs.collectAsState().value.toLong(),
-                    modifier = Modifier
-                        .fillMaxSize()
-                        // 下边距要给最下面那条音名标签留出空间：
-                        // 标签画在 y-7px 处，字高约 27px，会往下探出绘图区一点，
-                        // 留 26 dp 会被底部那一行切掉半截。
-                        .padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 34.dp),
-                    textMeasurer = textMeasurer,
-                    active = running,
-                    avgHz = readout.avgHz,
-                    range = freqRange,
-                )
-                // 底部一行：图例 / 频率范围 / 对齐值。
+            // 卡片分成两段：曲线（占满剩余空间）+ 底部信息条。
+            //
+            // 之前底部信息是用 `align(BottomStart)` 压在曲线上的——
+            // 窄屏（360 dp 那种）上信息条会变高，然后**盖住**曲线的底部。
+            // 改成 Column 分段后，结构上就不可能重叠：
+            // 曲线在 weight(1f) 的 Box 里，信息条在它下面，各占各的。
+            Column(Modifier.fillMaxSize()) {
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                ) {
+                    PitchCurve(
+                        history = engine.history,
+                        offsetMs = engine.autoOffsetMs.collectAsState().value.toLong(),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            // 下边距给最下面那条音名标签留位：
+                            // 标签画在 y-7px 处、字高约 27px，会往下探出绘图区一点。
+                            .padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 10.dp),
+                        textMeasurer = textMeasurer,
+                        active = running,
+                        avgHz = readout.avgHz,
+                        range = freqRange,
+                    )
+                }
+
+                // 底部信息条：频率范围 / 对齐值，一行。
                 //
-                // 三样东西都在这一行里——之前"对齐"单独放在 BottomEnd，
-                // 一旦频率范围被调高，最下面那条频率标签正好和它撞上。
+                // 原来这里还有一句图例（"虚线 = 平均音高 · 实线 = 当前音高"），
+                // 窄屏放不下会折行，压到曲线上；压短了也还是占地方。
+                // 直接删掉——虚线和实线的含义在设置面板里有说明，
+                // 曲线本身还有颜色区分（虚线/实线 + 圆点），不至于看不懂。
                 Row(
                     modifier = Modifier
-                        .align(Alignment.BottomStart)
                         .fillMaxWidth()
                         // 与绘图区左缘对齐（卡片内边距 14 + 坐标栏 22）
-                        .padding(start = 36.dp, end = 16.dp, bottom = 6.dp),
+                        .padding(start = 36.dp, end = 16.dp, top = 2.dp, bottom = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    // 图例：说明那条虚线是窗口平均音高——数值本身在读数卡里，
-                    // 这里只给一个图例，免得用户对着虚线猜它是什么。
-                    Text(
-                        text = "虚线 = 平均音高 · 实线 = 当前音高",
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.weight(1f),
-                    )
                     // 频率范围。点一下回到默认。
                     FrequencyRangeChip(range = freqRange)
                     Text(
                         text = "对齐 ${engine.autoOffsetMs.collectAsState().value.roundToInt()} ms",
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
                     )
                 }
             }
@@ -687,6 +693,12 @@ private fun SettingsSheet(
 
             // --- 频率范围 ---
             SectionLabel("频率范围")
+            Text(
+                text = "曲线上有两条参考线：「虚线」= 窗口平均音高，" +
+                    "「实线 + 圆点」= 当前音高。颜色跟着所在音域走（女声区粉、男声区蓝）。",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Text(
                 text = "在曲线上「上下滑动」可以调整可见的频率范围，" +
                     "「双指捏合」可以缩放。默认覆盖 80–270 Hz，" +
