@@ -144,6 +144,9 @@ class VoiceEngine(
     /** 保护回放状态机的切换。 */
     private val replayLock = Any()
 
+    /** 返听线程的"有新活干"信号。 */
+    private val monitorSignal = MonitorSignal()
+
     private val framesWritten = AtomicLong(0)
     private val timestampProbe = TimestampProbe()
 
@@ -455,10 +458,23 @@ class VoiceEngine(
             track!!.setVolume(monitorGain)
             track.play()
             startMonitorThread(track)
-        } else if (!need && alive) {
+        } else if (need) {
+            // 线程活着但可能在等活——叫醒它。
+            signalMonitor()
+        } else if (alive) {
             stopMonitorThread()
             runCatching { track?.pause() }
         }
+    }
+
+    /**
+     * 叫醒可能正在等待的返听线程。
+     *
+     * 代号必须在**锁里面**加——等待方也是在锁里面比对代号，
+     * 这样"检查条件"和"进入等待"之间不会插进别人。
+     */
+    private fun signalMonitor() {
+        monitorSignal.signal()
     }
 
     /** 创建返听播放通道。失败返回 null。 */
@@ -504,6 +520,9 @@ class VoiceEngine(
     }
 
     private fun stopMonitorThread() {
+        // 先叫醒它：线程空闲时在 monitorSignal 上等（最长 200 ms），
+        // 不叫醒的话 join 要白等那么久——这是在 UI 线程上等的。
+        monitorSignal.signal()
         monitorThread?.join(500)
         monitorThread = null
     }
@@ -513,6 +532,8 @@ class VoiceEngine(
         running = false
         replay.finish()
         _replaying.value = false
+        // 叫醒可能在等的返听线程，别让 stop() 白等 200 ms
+        monitorSignal.signal()
         captureThread?.join(500)
         stopMonitorThread()
         captureThread = null
@@ -696,18 +717,17 @@ class VoiceEngine(
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         val buf = ByteArray(BLOCK_FRAMES * 4)
         while (running) {
-            // 扬声器模式：没有实时返听，也没有快照 → 没有数据可喂，
-            // 线程退出（播放通道留着，下次回放还能用）。
+            // 没有实时返听、也没有快照 → 暂时没事干。
+            //
+            // 这里**不能直接退出线程**：退出和"UI 线程要重建线程"之间有竞态——
+            // UI 线程看到 isAlive 还是 true 就不重建，然后本线程退出了，
+            // 结果一个线程都没有，回放静默地什么都不响。
+            //
+            // 改成"等着"，由 UI 线程用 [signalMonitor] 叫醒。
             if (!replay.active && !liveMonitorOn) {
-                // 扬声器模式：播放通道只为回放而建，这里把它暂停。
-                //
-                // **不 release**——release 和"下一次回放新建通道"之间
-                // 有竞态：旧线程可能在 UI 线程建好新通道之后才走到这里，
-                // 把新通道给释放了。只 pause 就没这个问题，
-                // 通道留到 stop() 统一收。
-                runCatching { track.pause() }
-                Log.i(TAG, "REPLAY thread exit")
-                return
+                // 等着。醒来后重新检查条件（signal 那边可能派了新活）。
+                if (!monitorSignal.awaitWork(false)) return
+                continue
             }
             val n = if (replay.active) {
                 // 回放中：喂快照，不再喂实时环形缓冲——实时返听自然就停了。
