@@ -78,6 +78,8 @@ import com.vera.pinkvoice.audio.EngineStatus
 import com.vera.pinkvoice.audio.LatencyInfo
 import com.vera.pinkvoice.audio.NoiseGate
 import com.vera.pinkvoice.audio.PitchMath
+import com.vera.pinkvoice.Prefs
+import com.vera.pinkvoice.audio.ReplayAction
 import com.vera.pinkvoice.audio.VoiceEngine
 import kotlin.math.abs
 import kotlin.math.log10
@@ -136,10 +138,25 @@ fun VoiceScreen(
     val freqRange = rememberFrequencyRange()
     // 返听降噪强度：只影响耳朵里听到的，不影响曲线
     var noiseLevel by remember { mutableFloatStateOf(0f) }
-    // 回放窗口长度（秒）
-    var replayWindow by remember { mutableIntStateOf(VoiceEngine.DEFAULT_REPLAY_SECONDS) }
+    // 回放窗口长度（秒）。
+    //
+    // 存进偏好里——用户明确选过的选项，不该每次开 App 都退回默认。
+    var replayWindow by remember {
+        mutableIntStateOf(
+            Prefs.replayWindowSeconds(context, VoiceEngine.DEFAULT_REPLAY_SECONDS)
+        )
+    }
     // 当前是否正在回放
     val replaying = engine.replaying.collectAsState().value
+    // 回放提示（比如"还没录到东西"），null = 不显示
+    var replayHint by remember { mutableStateOf<String?>(null) }
+    // 提示显示几秒后自动消失——一直挂着占地方
+    LaunchedEffect(replayHint) {
+        if (replayHint != null) {
+            delay(3000)
+            replayHint = null
+        }
+    }
     var showSettings by remember { mutableStateOf(false) }
     var device by remember { mutableStateOf(AudioOutputInfo.current(audioManager)) }
 
@@ -195,7 +212,10 @@ fun VoiceScreen(
     }
     LaunchedEffect(gain) { engine.monitorGain = gain }
     LaunchedEffect(noiseLevel) { engine.noiseReductionLevel = noiseLevel }
-    LaunchedEffect(replayWindow) { engine.replayWindowSeconds = replayWindow }
+    LaunchedEffect(replayWindow) {
+        engine.replayWindowSeconds = replayWindow
+        Prefs.setReplayWindowSeconds(context, replayWindow)
+    }
 
     // 视觉对齐量 = 输出延迟 - 分析延迟（推导见 README），蓝牙附加部分手动补
     //
@@ -463,6 +483,63 @@ fun VoiceScreen(
             }
         }
 
+        // ---------------- 回放行 ----------------
+        //
+        // 单独一行，不跟主按钮挤在一起。
+        // 窄屏（360 dp）上三个元素并排的话：主按钮只剩 72 dp，
+        // 「开始监听 + 返听」根本放不下。
+        if (running) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Button(
+                    onClick = {
+                        // 状态判断交给引擎——UI 看到的 replaying 可能滞后一帧，
+                        // 拿它来决定"开始还是停止"会点不动。
+                        when (engine.toggleReplay()) {
+                            ReplayAction.STARTED -> replayHint = null
+                            ReplayAction.STOPPED -> replayHint = null
+                            ReplayAction.FAILED -> replayHint = "还没录到声音，稍等一下再试"
+                        }
+                    },
+                    // 扬声器模式也能回放——回放是播放**已经录下的**声音，
+                    // 不会形成正反馈啸叫（实时返听才有那个问题）。
+                    enabled = true,
+                    modifier = Modifier
+                        .width(120.dp)
+                        .height(44.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (replaying) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant
+                        },
+                        contentColor = if (replaying) {
+                            MaterialTheme.colorScheme.onPrimary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    ),
+                ) {
+                    Text(
+                        text = if (replaying) "■ 停止回放" else "▶ 回放",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                    )
+                }
+                Text(
+                    text = replayHint ?: "最近 $replayWindow 秒",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+        }
+
         // ---------------- 控制条 ----------------
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -510,41 +587,6 @@ fun VoiceScreen(
                     fontSize = 16.sp,
                     fontWeight = FontWeight.SemiBold,
                 )
-            }
-
-            // 回放：监听中才有意义（没录到东西可放）
-            if (running) {
-                Button(
-                    onClick = {
-                        if (replaying) engine.stopReplay() else engine.startReplay()
-                    },
-                    // 扬声器模式也能回放——回放是播放**已经录下的**声音，
-                    // 不会形成正反馈啸叫（实时返听才有那个问题）。
-                    enabled = true,
-                    modifier = Modifier
-                        .width(96.dp)
-                        .height(54.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (replaying) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.surfaceVariant
-                        },
-                        contentColor = if (replaying) {
-                            MaterialTheme.colorScheme.onPrimary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                    ),
-                ) {
-                    Text(
-                        text = if (replaying) "■ 停止" else "▶ 回放",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                    )
-                }
             }
 
             // 返听音量

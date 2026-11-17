@@ -337,7 +337,6 @@ class VoiceEngine(
      */
     fun startReplay(): Boolean {
         if (!running) return false
-        if (replay.active) return false
 
         // 先取快照。取不到就什么都别做——
         // 建了通道再发现没东西可放，白白占一个 AudioTrack。
@@ -358,11 +357,44 @@ class VoiceEngine(
         // 顺序反了会出事：扬声器模式下返听线程看到"没有快照且没有实时返听"
         // 就会认为没数据可喂、直接退出——如果线程比快照先就位，
         // 回放会静默地什么都不响。
-        replay.begin(data)
-        _replaying.value = true
+        //
+        // "检查是否已在回放"和"挂上快照"必须原子：
+        // 连点两下的话，两个调用都通过了检查，后一个把前一个的快照盖掉，
+        // 播放位置归零——听感上是"刚播的又从头来了一遍"。
+        synchronized(replayLock) {
+            if (replay.active) return false
+            replay.begin(data)
+            _replaying.value = true
+        }
         syncMonitorThread()
         Log.i(TAG, "REPLAY start ms=${got * 1000 / (activeRate * 2)} avail=${audioRecorder.availableBytes()}")
         return true
+    }
+
+    /**
+     * 开始 / 停止回放，由引擎自己判断当前状态。
+     *
+     * UI 按钮**不能**根据自己看到的 [replaying] 来决定做什么——
+     * 那个状态是从 StateFlow 来的，可能比引擎的实际状态滞后一帧。
+     * 滞后的时候用户点"停止"，代码却按"还没在回放"去 start，
+     * 结果点了没反应。
+     *
+     * 这里在引擎内部原子地判断，UI 只管发指令。
+     *
+     * @return 这次操作的结果。UI 靠它决定要不要提示。
+     */
+    fun toggleReplay(): ReplayAction {
+        synchronized(replayLock) {
+            if (replay.active) {
+                replay.finish()
+                _replaying.value = false
+                ring.clear()
+                syncMonitorThread()
+                Log.i(TAG, "REPLAY stop")
+                return ReplayAction.STOPPED
+            }
+        }
+        return if (startReplay()) ReplayAction.STARTED else ReplayAction.FAILED
     }
 
     /**
@@ -373,6 +405,10 @@ class VoiceEngine(
      */
     fun stopReplay() {
         finishReplay()
+        // 线程和通道的状态也得跟上：
+        // - 扬声器模式 → 没有实时返听可回，线程退出、通道暂停
+        // - 耳机模式   → 回到实时返听，线程继续跑
+        syncMonitorThread()
         Log.i(TAG, "REPLAY stop")
     }
 
@@ -764,6 +800,18 @@ class VoiceEngine(
             if (w > 0) framesWritten.addAndGet((w / 2).toLong())
         }
     }
+}
+
+/** 回放操作的结果。 */
+enum class ReplayAction {
+    /** 开始回放成功。 */
+    STARTED,
+
+    /** 停止回放成功。 */
+    STOPPED,
+
+    /** 没开始成（还没录到声音之类）。 */
+    FAILED,
 }
 
 /** 读取当前默认音频输出设备类型（蓝牙 / 有线 / 内置扬声器）。 */
