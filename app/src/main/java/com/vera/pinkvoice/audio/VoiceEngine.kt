@@ -367,7 +367,10 @@ class VoiceEngine(
             _replaying.value = true
         }
         syncMonitorThread()
-        Log.i(TAG, "REPLAY start ms=${got * 1000 / (activeRate * 2)} avail=${audioRecorder.availableBytes()}")
+        // 用 Long 算：got 最多 288 万字节，×1000 就超过 Int 上限了
+        // （30 秒窗口时 got*1000 = 28.8 亿 > 21.47 亿，会溢出成负数）。
+        val ms = got.toLong() * 1000L / (activeRate.toLong() * 2L)
+        Log.i(TAG, "REPLAY start ms=$ms avail=${audioRecorder.availableBytes()}")
         return true
     }
 

@@ -945,7 +945,7 @@ private fun rmsToRatio(rms: Float): Float {
  * 所以下限取 -60 dB：再往下都是底噪，显示出来没有意义。
  */
 /** 回放窗口的可选长度（秒）。 */
-private val REPLAY_WINDOW_OPTIONS = intArrayOf(5, 10, 20)
+private val REPLAY_WINDOW_OPTIONS = intArrayOf(10, 20, 30)
 
 /**
  * 降噪强度对应的门限（dBFS）。
