@@ -11,6 +11,7 @@ import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
 import android.os.Process
 import android.util.Log
+import kotlin.math.min
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -182,11 +183,22 @@ class VoiceEngine(
     @Volatile
     private var running = false
 
+    /**
+     * 返听音量，0..2（0%–200%）。
+     *
+     * Android 的 [AudioTrack.setVolume] 上限是 1.0，所以超过 100% 的部分
+     * 没法靠硬件音量——得在**监听通路**上做软件增益。
+     *
+     * 注意软件增益只加在**送到扬声器/耳机**的那一路：
+     * 录音（供回放用）保持原样，否则回放出来的是被放大过的、
+     * 可能已经削波失真的声音。
+     */
     @Volatile
-    var monitorGain: Float = 0.0f
+    var monitorGain: Float = 1.0f
         set(value) {
-            field = value.coerceIn(0f, 1f)
-            player?.setVolume(field)
+            field = value.coerceIn(0f, 2f)
+            // 硬件音量只能到 1.0，多出来的交给软件增益
+            player?.setVolume(min(field, 1f))
         }
 
     /**
@@ -298,7 +310,7 @@ class VoiceEngine(
         yin!!.reset()
         history.clear()
         framesWritten.set(0)
-        track?.setVolume(monitorGain)
+        track?.setVolume(min(monitorGain, 1f))
         track?.play()
         rec.startRecording()
 
@@ -450,7 +462,7 @@ class VoiceEngine(
                 Log.w(TAG, "运行时开启返听失败，保持关闭")
                 return
             }
-            track.setVolume(monitorGain)
+            track.setVolume(min(monitorGain, 1f))
             liveMonitorOn = true
             syncMonitorThread()
             Log.i(TAG, "monitoring enabled at runtime")
@@ -494,7 +506,7 @@ class VoiceEngine(
         val need = track != null && (liveMonitorOn || replay.active)
         val alive = monitorThread?.isAlive == true
         if (need && !alive) {
-            track!!.setVolume(monitorGain)
+            track!!.setVolume(min(monitorGain, 1f))
             track.play()
             startMonitorThread(track)
         } else if (need) {
@@ -799,6 +811,13 @@ class VoiceEngine(
             // WRITE_BLOCKING 卡在满缓冲上时，stop() 的 join 会超时，
             // 然后通道被 release，这时 write 会抛 IllegalStateException。
             // 捕获它、干净地退出线程，别让异常冒到线程外面。
+            // 超过 100% 的部分用软件增益补（硬件音量到 1.0 就封顶了）。
+            //
+            // 放在这里而不是采集线程：这里写出去的才是"要出声的东西"，
+            // 采集线程那条录音通路保持原样，回放才不会被放大失真。
+            val g = monitorGain
+            if (g > 1.001f) applyPcm16Gain(buf, n, g)
+
             val w = try {
                 track.write(buf, 0, n, AudioTrack.WRITE_BLOCKING)
             } catch (e: IllegalStateException) {

@@ -136,11 +136,13 @@ fun VoiceScreen(
         ActivityResultContracts.RequestPermission(),
     ) { granted = it }
 
-    var gain by remember { mutableFloatStateOf(0.55f) }
+    // 返听音量 0..2（0%–200%），默认 100%
+    var gain by remember { mutableFloatStateOf(1.0f) }
     // 频率轴的可见范围：曲线上滑动 / 双指缩放可以调
     val freqRange = rememberFrequencyRange()
     // 返听降噪强度：只影响耳朵里听到的，不影响曲线
-    var noiseLevel by remember { mutableFloatStateOf(0f) }
+    // 降噪默认门限 -50 dB
+    var noiseLevel by remember { mutableFloatStateOf(DEFAULT_NOISE_LEVEL) }
     // 回放窗口长度（秒）。
     //
     // 存进偏好里——用户明确选过的选项，不该每次开 App 都退回默认。
@@ -787,6 +789,8 @@ private fun SettingsSheet(
                 } else {
                     "不可用"
                 },
+                // 0%–200%。超过 100% 走软件增益（硬件音量封顶 1.0）。
+                valueRange = 0f..2f,
             )
 
             // --- 降噪 ---
@@ -937,6 +941,7 @@ private fun LabeledSlider(
     onValueChange: (Float) -> Unit,
     enabled: Boolean,
     valueText: String,
+    valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
 ) {
     val primary = MaterialTheme.colorScheme.primary
     val track = MaterialTheme.colorScheme.surfaceVariant
@@ -947,7 +952,7 @@ private fun LabeledSlider(
         Slider(
             value = value,
             onValueChange = onValueChange,
-            valueRange = 0f..1f,
+            valueRange = valueRange,
             enabled = enabled,
             colors = SliderDefaults.colors(
                 thumbColor = primary,
@@ -996,6 +1001,19 @@ private fun LabeledSlider(
         )
     }
 }
+
+/**
+ * 降噪的默认门限（dBFS）。
+ *
+ * -50 dB：比室内底噪（约 -60 dB）高一点，
+ * 安静说话不会被切掉，但空调、风扇那种持续底噪会被压下去。
+ */
+private const val DEFAULT_NOISE_THRESHOLD_DB = -50f
+
+/** 对应 [DEFAULT_NOISE_THRESHOLD_DB] 的降噪强度（0..1）。 */
+private val DEFAULT_NOISE_LEVEL =
+    (DEFAULT_NOISE_THRESHOLD_DB - NoiseGate.MIN_THRESHOLD_DB) /
+        (NoiseGate.MAX_THRESHOLD_DB - NoiseGate.MIN_THRESHOLD_DB)
 
 /** 回放窗口的可选长度（秒）。 */
 private val REPLAY_WINDOW_OPTIONS = intArrayOf(10, 20, 30)
