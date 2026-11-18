@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -488,62 +489,15 @@ fun VoiceScreen(
         // 单独一行，不跟主按钮挤在一起。
         // 窄屏（360 dp）上三个元素并排的话：主按钮只剩 72 dp，
         // 「开始监听 + 返听」根本放不下。
-        if (running) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Button(
-                    onClick = {
-                        // 状态判断交给引擎——UI 看到的 replaying 可能滞后一帧，
-                        // 拿它来决定"开始还是停止"会点不动。
-                        when (engine.toggleReplay()) {
-                            ReplayAction.STARTED -> replayHint = null
-                            ReplayAction.STOPPED -> replayHint = null
-                            ReplayAction.FAILED -> replayHint = "还没录到声音，稍等一下再试"
-                        }
-                    },
-                    // 扬声器模式也能回放——回放是播放**已经录下的**声音，
-                    // 不会形成正反馈啸叫（实时返听才有那个问题）。
-                    enabled = true,
-                    modifier = Modifier
-                        .width(120.dp)
-                        .height(44.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (replaying) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.surfaceVariant
-                        },
-                        contentColor = if (replaying) {
-                            MaterialTheme.colorScheme.onPrimary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                    ),
-                ) {
-                    Text(
-                        text = if (replaying) "■ 停止回放" else "▶ 回放",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                    )
-                }
-                Text(
-                    text = replayHint ?: "最近 $replayWindow 秒",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
-            }
-        }
-
         // ---------------- 控制条 ----------------
+        //
+        // 两件东西并排：监听 / 回放。
+        //
+        // 返听音量挪到设置面板了——底部只留主要动作，
+        // 挤在一起反而都不好用。
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Button(
@@ -558,6 +512,7 @@ fun VoiceScreen(
                     .weight(1f)
                     .height(54.dp),
                 shape = RoundedCornerShape(16.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (running) {
                         MaterialTheme.colorScheme.surfaceVariant
@@ -576,50 +531,63 @@ fun VoiceScreen(
                 } else {
                     StatusDot(Color.White, 10.dp)
                 }
-                Spacer(Modifier.width(10.dp))
+                Spacer(Modifier.width(8.dp))
                 Text(
                     text = when {
                         running -> "停止监听"
                         !granted -> "授予麦克风权限"
-                        monitoringAvailable -> "开始监听 + 返听"
                         else -> "开始监听"
                     },
-                    fontSize = 16.sp,
+                    fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
                 )
             }
 
-            // 返听音量
-            Column(
-                modifier = Modifier.width(136.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    SpeakerGlyph(color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        text = if (monitoringAvailable) {
-                            "返听 ${(gain * 100).roundToInt()}%"
+            // 回放：和监听按钮并排。
+            //
+            // 只在监听中才有意义（没录到东西可放）。
+            // 扬声器模式也能用——回放播的是**已经录下的**声音，
+            // 不会形成正反馈啸叫（实时返听才有那个问题）。
+            if (running) {
+                Button(
+                    onClick = {
+                        // 状态判断交给引擎——UI 看到的 replaying 可能滞后一帧，
+                        // 拿它来决定"开始还是停止"会点不动。
+                        when (engine.toggleReplay()) {
+                            ReplayAction.STARTED -> replayHint = null
+                            ReplayAction.STOPPED -> replayHint = null
+                            ReplayAction.FAILED -> replayHint = "还没录到声音，稍等一下再试"
+                        }
+                    },
+                    enabled = true,
+                    modifier = Modifier
+                        .width(84.dp)
+                        .height(54.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (replaying) {
+                            MaterialTheme.colorScheme.primary
                         } else {
-                            "返听不可用"
+                            MaterialTheme.colorScheme.surfaceVariant
                         },
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        contentColor = if (replaying) {
+                            MaterialTheme.colorScheme.onPrimary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    ),
+                ) {
+                    Text(
+                        text = if (replaying) "■ 停止" else "▶ 回放",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
                     )
                 }
-                Slider(
-                    value = gain,
-                    // 返听不可用时滑块置灰不可拖——避免让人以为调了音量有效果
-                    onValueChange = { if (monitoringAvailable) gain = it },
-                    valueRange = 0f..1f,
-                    enabled = monitoringAvailable,
-                    colors = SliderDefaults.colors(
-                        thumbColor = MaterialTheme.colorScheme.primary,
-                        activeTrackColor = MaterialTheme.colorScheme.primary,
-                    ),
-                    modifier = Modifier.height(28.dp),
-                )
             }
+
         }
 
         (status as? EngineStatus.Error)?.let { err ->
@@ -643,6 +611,8 @@ fun VoiceScreen(
             onNoiseLevelChange = { noiseLevel = it },
             replayWindow = replayWindow,
             onReplayWindowChange = { replayWindow = it },
+            gain = gain,
+            onGainChange = { gain = it },
         )
     }
 }
@@ -731,6 +701,8 @@ private fun SettingsSheet(
     onNoiseLevelChange: (Float) -> Unit,
     replayWindow: Int,
     onReplayWindowChange: (Int) -> Unit,
+    gain: Float,
+    onGainChange: (Float) -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val palette = LocalVoicePalette.current
@@ -793,6 +765,33 @@ private fun SettingsSheet(
                     "也就是男声区和女声区。改过的范围点一下右下角就能复位。",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            // --- 返听音量 ---
+            SectionLabel("返听音量")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SpeakerGlyph(color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = if (monitoringAvailable) {
+                        "${(gain * 100).roundToInt()}%"
+                    } else {
+                        "返听不可用（没接耳机）"
+                    },
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Slider(
+                value = gain,
+                // 返听不可用时滑块置灰不可拖——避免让人以为调了音量有效果
+                onValueChange = { if (monitoringAvailable) onGainChange(it) },
+                valueRange = 0f..1f,
+                enabled = monitoringAvailable,
+                colors = SliderDefaults.colors(
+                    thumbColor = MaterialTheme.colorScheme.primary,
+                    activeTrackColor = MaterialTheme.colorScheme.primary,
+                ),
             )
 
             // --- 降噪 ---
