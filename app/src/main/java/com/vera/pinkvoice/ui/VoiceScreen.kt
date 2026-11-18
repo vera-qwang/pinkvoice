@@ -14,6 +14,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -70,6 +71,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
@@ -768,30 +770,23 @@ private fun SettingsSheet(
             )
 
             // --- 返听音量 ---
+            //
+            // 两个滑块（返听音量 / 降噪）用**一样的结构**：
+            // 「图标 + 数值」一行，滑块在下面占满整行。
+            //
+            // 之前返听音量是图标在上、滑块在下，降噪却是数值在左、
+            // 滑块在右——两个长得不一样，看着像两个不同的东西。
             SectionLabel("返听音量")
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SpeakerGlyph(color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = if (monitoringAvailable) {
-                        "${(gain * 100).roundToInt()}%"
-                    } else {
-                        "返听不可用（没接耳机）"
-                    },
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Slider(
+            LabeledSlider(
                 value = gain,
                 // 返听不可用时滑块置灰不可拖——避免让人以为调了音量有效果
                 onValueChange = { if (monitoringAvailable) onGainChange(it) },
-                valueRange = 0f..1f,
                 enabled = monitoringAvailable,
-                colors = SliderDefaults.colors(
-                    thumbColor = MaterialTheme.colorScheme.primary,
-                    activeTrackColor = MaterialTheme.colorScheme.primary,
-                ),
+                valueText = if (monitoringAvailable) {
+                    "${(gain * 100).roundToInt()}%"
+                } else {
+                    "不可用"
+                },
             )
 
             // --- 降噪 ---
@@ -803,32 +798,16 @@ private fun SettingsSheet(
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(
-                    text = if (noiseLevel <= 0f) {
-                        "关闭"
-                    } else {
-                        "门限 ${noiseGateThresholdDb(noiseLevel).roundToInt()} dB"
-                    },
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.width(104.dp),
-                )
-                Slider(
-                    value = noiseLevel,
-                    onValueChange = onNoiseLevelChange,
-                    valueRange = 0f..1f,
-                    colors = SliderDefaults.colors(
-                        thumbColor = MaterialTheme.colorScheme.primary,
-                        activeTrackColor = MaterialTheme.colorScheme.primary,
-                    ),
-                    modifier = Modifier.weight(1f),
-                )
-            }
+            LabeledSlider(
+                value = noiseLevel,
+                onValueChange = onNoiseLevelChange,
+                enabled = true,
+                valueText = if (noiseLevel <= 0f) {
+                    "关闭"
+                } else {
+                    "${noiseGateThresholdDb(noiseLevel).roundToInt()} dB"
+                },
+            )
 
             // --- 回放 ---
             SectionLabel("回放")
@@ -944,6 +923,80 @@ private fun rmsToRatio(rms: Float): Float {
  * 底噪在 -60 dB 附近（真机实测静音时 rms ≈ 0.0009 → -61 dB），
  * 所以下限取 -60 dB：再往下都是底噪，显示出来没有意义。
  */
+/**
+ * 一条带数值标签的滑块。
+ *
+ * 两个滑块（返听音量 / 降噪）共用，所以：
+ * - 长度一样（数值列定宽，两条对齐）
+ * - 样式一样（小圆点拇指，不是 M3 那个竖条）
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun LabeledSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    enabled: Boolean,
+    valueText: String,
+) {
+    val primary = MaterialTheme.colorScheme.primary
+    val track = MaterialTheme.colorScheme.surfaceVariant
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = 0f..1f,
+            enabled = enabled,
+            colors = SliderDefaults.colors(
+                thumbColor = primary,
+                activeTrackColor = primary,
+                inactiveTrackColor = track,
+                disabledThumbColor = MaterialTheme.colorScheme.outline,
+                disabledActiveTrackColor = MaterialTheme.colorScheme.outline,
+                disabledInactiveTrackColor = track,
+            ),
+            // M3 默认的拇指是一条竖线，又高又抢眼——换成小圆点。
+            thumb = {
+                Box(
+                    Modifier
+                        .size(16.dp)
+                        .background(
+                            if (enabled) primary else MaterialTheme.colorScheme.outline,
+                            CircleShape,
+                        ),
+                )
+            },
+            // 默认轨道在拇指两侧各留一段缺口，这里要连续的。
+            track = { state ->
+                SliderDefaults.Track(
+                    sliderState = state,
+                    colors = SliderDefaults.colors(
+                        thumbColor = primary,
+                        activeTrackColor = primary,
+                        inactiveTrackColor = track,
+                        disabledThumbColor = MaterialTheme.colorScheme.outline,
+                        disabledActiveTrackColor = MaterialTheme.colorScheme.outline,
+                        disabledInactiveTrackColor = track,
+                    ),
+                    drawStopIndicator = null,
+                    drawTick = { _, _ -> },
+                )
+            },
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = valueText,
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            // 定宽：两条滑块才能一样长
+            modifier = Modifier.width(48.dp),
+            textAlign = TextAlign.End,
+        )
+    }
+}
+
 /** 回放窗口的可选长度（秒）。 */
 private val REPLAY_WINDOW_OPTIONS = intArrayOf(10, 20, 30)
 

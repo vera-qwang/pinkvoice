@@ -159,38 +159,6 @@ fun LevelMeter(
     }
 }
 
-/** 扬声器图标（自绘，避免引入 material-icons-extended）。 */
-@Composable
-fun SpeakerGlyph(
-    modifier: Modifier = Modifier,
-    color: Color = Color.White,
-) {
-    Canvas(modifier.size(18.dp)) {
-        val w = size.width
-        val h = size.height
-        val path = androidx.compose.ui.graphics.Path().apply {
-            moveTo(w * 0.10f, h * 0.36f)
-            lineTo(w * 0.30f, h * 0.36f)
-            lineTo(w * 0.52f, h * 0.14f)
-            lineTo(w * 0.52f, h * 0.86f)
-            lineTo(w * 0.30f, h * 0.64f)
-            lineTo(w * 0.10f, h * 0.64f)
-            close()
-        }
-        drawPath(path, color)
-        // 声波
-        drawArc(
-            color = color,
-            startAngle = -50f,
-            sweepAngle = 100f,
-            useCenter = false,
-            topLeft = Offset(w * 0.58f, h * 0.24f),
-            size = Size(w * 0.40f, h * 0.52f),
-            style = Stroke(width = w * 0.09f),
-        )
-    }
-}
-
 /** 停止/录音的小方块图标。 */
 @Composable
 fun StopGlyph(modifier: Modifier = Modifier, color: Color = Color.White) {
