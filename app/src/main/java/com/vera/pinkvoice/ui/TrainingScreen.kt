@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vera.pinkvoice.audio.FormantNormalizer
 import com.vera.pinkvoice.audio.VoiceEngine
+import com.vera.pinkvoice.audio.VowelRecognizer
 import com.vera.pinkvoice.audio.VowelTarget
 
 /**
@@ -166,6 +167,31 @@ fun TrainingScreen(
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
+                // 到目标的距离 —— 训练时最该看的一个数。
+                //
+                // 归一化 Hz 空间里的欧氏距离，F2 的权重 1.4 倍
+                // （舌位变化比开口度更容易被听出来）。
+                val dist = VowelRecognizer.distanceTo(
+                    target,
+                    quality.formants.f1,
+                    quality.formants.f2,
+                )
+                Text(
+                    text = when {
+                        !quality.valid -> "离「${target.label}」——"
+                        dist <= 80f -> "离「${target.label}」很近 ✓"
+                        dist <= 180f -> "离「${target.label}」还差一点"
+                        else -> "离「${target.label}」还差不少"
+                    },
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = when {
+                        !quality.valid -> MaterialTheme.colorScheme.onSurfaceVariant
+                        dist <= 80f -> palette.inTune
+                        dist <= 180f -> palette.nearTune
+                        else -> palette.offTune
+                    },
+                )
             }
         }
 

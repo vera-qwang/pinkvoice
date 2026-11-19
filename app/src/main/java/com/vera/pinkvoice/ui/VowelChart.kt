@@ -12,6 +12,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
@@ -139,18 +140,28 @@ fun VowelChart(
             }
 
             // 轨迹
+            //
+            // 画在坐标区**里面**（裁剪），而且遇到大跳跃要断开 ——
+            // 静音段前后 F1/F2 会突然变好几百 Hz，连起来就是
+            // 横穿整张图的直线，看着像乱线。
             if (trail.size >= 2) {
-                for (i in 0 until trail.size - 1) {
-                    val a = trail[i]
-                    val b = trail[i + 1]
-                    if (a.first <= 0f || b.first <= 0f) continue
-                    val alpha = (i.toFloat() / trail.size * 0.7f + 0.15f)
-                    drawLine(
-                        color = palette.trace.copy(alpha = alpha),
-                        start = Offset(xOf(a.second), yOf(a.first)),
-                        end = Offset(xOf(b.second), yOf(b.first)),
-                        strokeWidth = 2.dp.toPx(),
-                    )
+                clipRect(padL, padT, padL + w, padT + h) {
+                    for (i in 0 until trail.size - 1) {
+                        val a = trail[i]
+                        val b = trail[i + 1]
+                        if (a.first <= 0f || b.first <= 0f) continue
+                        // 跳跃太大 → 断开，不画这条
+                        val jump = kotlin.math.abs(b.first - a.first) +
+                            kotlin.math.abs(b.second - a.second)
+                        if (jump > 300f) continue
+                        val alpha = (i.toFloat() / trail.size * 0.7f + 0.15f)
+                        drawLine(
+                            color = palette.trace.copy(alpha = alpha),
+                            start = Offset(xOf(a.second), yOf(a.first)),
+                            end = Offset(xOf(b.second), yOf(b.first)),
+                            strokeWidth = 2.dp.toPx(),
+                        )
+                    }
                 }
             }
 
