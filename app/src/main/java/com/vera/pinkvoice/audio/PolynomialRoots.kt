@@ -84,9 +84,12 @@ object PolynomialRoots {
         val lead = c[n]
         if (lead != 0.0) c = DoubleArray(c.size) { c[it] / lead }
 
-        // 初始值：单位圆上均匀分布，稍微打乱起点避免退化
+        // 初始值：均匀分布在一个圆上。
+        //
+        // 半径按多项式的性质选：LPC 的**反转**多项式的根是极点，
+        // 都在单位圆内，所以初值取 0.8 半径更合适（在根附近收敛更快）。
         val z = ArrayList<Complex>(n)
-        val radius = 1.0 + 0.1 * (1.0 / n)
+        val radius = 0.8
         for (k in 0 until n) {
             val theta = 2.0 * Math.PI * k / n + 0.4
             z += Complex.polar(radius, theta)

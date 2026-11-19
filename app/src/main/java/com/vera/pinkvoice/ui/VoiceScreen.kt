@@ -118,6 +118,7 @@ fun VoiceScreen(
     engine: VoiceEngine,
     themeMode: ThemeMode = ThemeMode.System,
     onThemeModeChange: (ThemeMode) -> Unit = {},
+    modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
@@ -296,14 +297,8 @@ fun VoiceScreen(
     }
 
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    listOf(palette.backgroundTop, palette.backgroundBottom),
-                ),
-            )
-            .windowInsetsPadding(WindowInsets.safeDrawing)
             .padding(horizontal = 16.dp)
             .padding(top = 10.dp, bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),

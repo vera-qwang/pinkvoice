@@ -175,6 +175,42 @@ class VoiceEngine(
     @Volatile
     private var liveMonitorOn = false
 
+    /**
+     * 嗓音质量分析器（元音 / 稳态度 / 音色轴）。
+     *
+     * **默认不跑** —— 监测页只需要 f0 曲线，LPC 是额外的 CPU 开销。
+     * 训练页打开时才启用。
+     */
+    private var quality: VoiceQualityAnalyzer? = null
+
+    /** 质量分析当前是否启用。 */
+    @Volatile
+    var qualityAnalysisEnabled: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            if (value) {
+                quality = VoiceQualityAnalyzer(sampleRate = preferredAnalysisRate)
+            } else {
+                quality = null
+                _qualityState.value = QualityState.EMPTY
+            }
+        }
+
+    /** 开始录基准（音色轴的个人基准 + 声道长度校准）。 */
+    fun startBaselineCapture() {
+        quality?.startBaseline()
+    }
+
+    /** 取消录基准。 */
+    fun cancelBaselineCapture() {
+        quality?.cancelBaseline()
+    }
+
+    /** 质量分析的结果（给 UI 订阅）。 */
+    private val _qualityState = MutableStateFlow(QualityState.EMPTY)
+    val qualityState: StateFlow<QualityState> = _qualityState.asStateFlow()
+
     /** 返听降噪器（噪声门 + 高通）。 */
     private var noiseGate: NoiseGate? = null
     private var captureThread: Thread? = null
@@ -686,6 +722,10 @@ class VoiceEngine(
                 }
                 val analysedFrame = totalRead - analysisDelayInputSamples
                 val captureNs = tsNs + (analysedFrame - tsFrame) * 1_000_000_000L / rate
+                // 质量分析：和 YIN 共用同一份 16 kHz 数据，
+                // 但各自维护自己的滑动窗口（窗口/跳帧相同）。
+                quality?.process(floatsAnalysis, m)
+
                 detector.process(floatsAnalysis, m) { hz, clarity, rms ->
                     history.add(captureNs, hz, clarity, rms)
                     if (++frameCount % 32 == 0) {
@@ -751,6 +791,7 @@ class VoiceEngine(
                 analysisMs = analysisLatencyMs,
             )
             _droppedBytes.value = ring.droppedBytes
+            publishQuality()
         }
         if (now - lastLogNs > 2_000_000_000L) {
             lastLogNs = now
@@ -760,6 +801,22 @@ class VoiceEngine(
                     "analysis=${analysisLatencyMs.toInt()}ms dropped=${ring.droppedBytes}",
             )
         }
+    }
+
+    /** 把质量分析的结果发布出去（节流）。 */
+    private fun publishQuality() {
+        val q = quality ?: return
+        _qualityState.value = QualityState(
+            formants = q.formants,
+            tilt = q.tilt,
+            recognized = q.recognized,
+            recognizedDistance = q.recognizedDistance,
+            stability = q.stabilityScore,
+            timbre = q.timbreReading,
+            valid = q.validFrames > 4,
+            baselineProgress = q.baselineProgress,
+            capturingBaseline = q.capturingBaseline,
+        )
     }
 
     private var lastLogNs = 0L

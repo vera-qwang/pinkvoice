@@ -44,22 +44,26 @@ class LpcAnalyzer(
     /**
      * LPC 阶数。
      *
-     * 12 是**标定出来的**：用共振峰已知的合成元音扫了 12–24 阶，
-     * 平均误差在 12 阶最小（38 Hz），阶数一高就冒出伪根
-     * （16 阶平均误差 137 Hz，18 阶 223 Hz）。
+     * 16 是**标定出来的**，而且是**两处标定**的结果：
      *
-     * 原因：语音在 4 kHz 以下只有 4–5 个共振峰，约 8–10 个极点就够，
-     * 多出来的极点会去拟合噪声，产生的根有模有样但不是共振峰。
+     * - 合成元音（干净信号）：12 阶最好（平均误差 38 Hz），16 阶 63 Hz
+     * - **真机**（手机麦 + 蓝牙 + 房间）：12 阶会**整个丢掉 F2** ——
+     *   真信号比合成信号"脏"，低频结构更杂，要多几个极点才拟合得出
+     *   三个共振峰。实测 12 阶只有 F1 和 F3，16 阶才三个都在。
+     *
+     * 所以取 16：宁可多一点极点（后面有带宽/频带过滤兜底），
+     * 也不能丢共振峰。
      */
-    private val order: Int = 12,
+    private val order: Int = 16,
     /**
      * 预加重系数。
      *
-     * 0.3（约 +2.5 dB/oct）—— 同样是标定出来的：
-     * 0.3–0.7 都不错，0.97（+6 dB/oct）会把低频压平，
-     * /i/ 的 F1 直接消失（270 Hz 附近包络上根本没有峰）。
+     * 0.7（约 +5 dB/oct）—— 标定出来的折中：
+     * - 0（不加重）：低频压不住，反射系数接近 ±1，递推容易发散
+     * - 0.97（+6 dB/oct）：太狠，/i/ 的 F1 直接消失
+     * - 0.3–0.7：合成信号上误差都在 37–64 Hz 之间
      */
-    private val preEmphasis: Float = 0.3f,
+    private val preEmphasis: Float = 0.7f,
 ) {
 
     /** LPC 系数。a[0] 恒为 1，a[1..order] 是递推系数。 */
@@ -173,6 +177,22 @@ class LpcAnalyzer(
         return true
     }
 
+    /**
+     * 诊断：所有根（**不���任何过滤**），连同频率和带宽。
+     */
+    fun debugAllRoots(): List<Triple<Float, Float, Float>> {
+        if (!valid) return emptyList()
+        val coeffs = DoubleArray(order + 1) { a[order - it].toDouble() }
+        return PolynomialRoots.roots(coeffs).mapNotNull { r ->
+            val zr = r.abs()
+            if (zr < 1e-12) return@mapNotNull null
+            val theta = r.arg()
+            val hz = (theta / (2.0 * Math.PI) * sampleRate).toFloat()
+            val bw = (-sampleRate * kotlin.math.ln(zr) / Math.PI).toFloat()
+            Triple(hz, bw, zr.toFloat())
+        }.sortedBy { it.first }
+    }
+
     /** 最近一次分析得到的 LPC 系数（标准约定，a[0] = 1）。 */
     fun coefficients(): FloatArray = a.copyOf()
 
@@ -281,6 +301,74 @@ class LpcAnalyzer(
     data class Formant(val hz: Float, val bandwidthHz: Float)
 
     /**
+     * 用**包络挑峰**提取共振峰（前 3 个）。
+     *
+     * 和求根是两条独立的路，各有各的问题：
+     *
+     * - **求根**：理论上更准（极点就是共振峰），但反射系数接近 ±1 时
+     *   递推会发散，根求不出来；而且极点略微不稳定时会被过滤掉。
+     * - **挑峰**：不受递推发散影响，但周期声源会让包络上出现
+     *   一堆几乎等高的起伏，容易挑错。
+     *
+     * 所以两条都保留 —— 实际用哪条，看标定结果。
+     */
+    fun extractFormantsByEnvelope(minProminenceDb: Float = 1.5f): Formants {
+        if (!valid) return Formants(0f, 0f, 0f)
+        val peaks = findPeaks(150f, 4000f, stepHz = 10f)
+        if (peaks.isEmpty()) return Formants(0f, 0f, 0f)
+
+        // 每个峰的突出度：峰顶与两侧最近谷底的高差
+        val prom = FloatArray(peaks.size)
+        for (i in peaks.indices) {
+            val y = envelopeDb(peaks[i])
+            var valley = y
+            var left = peaks[i] - 10f
+            while (left > 150f) {
+                val v = envelopeDb(left)
+                if (v < valley) valley = v
+                if (v > y) break
+                left -= 10f
+            }
+            var right = peaks[i] + 10f
+            while (right < 4000f) {
+                val v = envelopeDb(right)
+                if (v < valley) valley = v
+                if (v > y) break
+                right += 10f
+            }
+            prom[i] = y - valley
+        }
+
+        /**
+         * 自下而上取第一个显著峰。
+         *
+         * 不能取"频带内最高峰"：F1 的频带（200–1000）和 F2 的频带
+         * （700–2800）是**重叠**的，按最高选会跳过 F1 直接选 F2。
+         */
+        fun firstSignificant(lo: Float, hi: Float): Float {
+            for (i in peaks.indices) {
+                val f = peaks[i]
+                if (f < lo) continue
+                if (f > hi) return 0f
+                if (prom[i] < minProminenceDb) continue
+                return f
+            }
+            return 0f
+        }
+
+        val f1 = firstSignificant(200f, 1000f)
+        val f2 = firstSignificant(
+            maxOf(700f, if (f1 > 0f) f1 + 200f else 700f),
+            2800f,
+        )
+        val f3 = firstSignificant(
+            maxOf(2200f, if (f2 > 0f) f2 + 200f else 2200f),
+            3800f,
+        )
+        return Formants(f1, f2, f3)
+    }
+
+    /**
      * 提取共振峰（前 3 个）。
      *
      * 走的是**求根**那条路，不是在包络上挑峰 —— 理由见
@@ -312,25 +400,54 @@ class LpcAnalyzer(
     fun extractFormantsByRoots(
         minHz: Float = 180f,
         maxHz: Float = 4000f,
-        maxBandwidthHz: Float = 400f,
+        /**
+         * 带宽上限。
+         *
+         * 520 Hz —— 比教科书上的 400 宽，因为真信号里的共振峰会被
+         * 手机麦、蓝牙链路和房间混响**抹宽**。实测 /a/ 的 F2 根
+         * 带宽 484–510 Hz，卡在 400 的话整个共振峰被丢掉。
+         *
+         * 但也不能太宽：放到 700 的话，伪根（阶数比实际共振峰多时
+         * 极点拟合噪声产生的）也会被放进来，把 F2 顶掉
+         * （实测 /i/ 的 F2 被一个 1280 Hz 的伪根占了位置）。
+         * 520 是两头都不越界的位置。
+         */
+        maxBandwidthHz: Float = 520f,
     ): List<Formant> {
         if (!valid) return emptyList()
-        // p(y) = 1 + a₁y + a₂y² + … + aₚy^p，y = z⁻¹
-        val coeffs = DoubleArray(order + 1) { a[it].toDouble() }
+
+        // 求**反转多项式**的根，而不是 LPC 多项式本身。
+        //
+        // LPC 多项式 A(z) = 1 + a₁z⁻¹ + … + aₚz⁻ᵖ，令 w = z⁻¹，
+        // 它的根在**单位圆外**（稳定极点的倒数的倒数……），
+        // 数值条件很差：Durand-Kerner 的初值在单位圆上、根在圆外，
+        // 经常收敛不了 —— 真机上表现为大部分帧一个根都求不出来。
+        //
+        // 反转多项式 q(w) = wᵖ + a₁wᵖ⁻¹ + … + aₚ 的根
+        // **就是极点本身**（|z| < 1，在单位圆内），
+        // 初值也该取在圆内，条件好得多。
+        //
+        // 系数按升幂传：[aₚ, aₚ₋₁, …, a₁, 1]
+        val coeffs = DoubleArray(order + 1) { a[order - it].toDouble() }
         val roots = PolynomialRoots.roots(coeffs)
 
         val out = ArrayList<Formant>(4)
         for (r in roots) {
-            // 极点 z = 1/y
-            if (r.abs() < 1e-12) continue
-            val zr = 1.0 / r.abs()
-            if (zr >= 1.0) continue          // 不稳定
-            val theta = -r.arg()              // 极点相位
-            if (theta <= 0.0) continue        // 只取上半平面
+            // r 就是极点 z
+            val zr = r.abs()
+            // 允许**略微不稳定**的极点（|z| 略大于 1）。
+            //
+            // LPC 拟合出的中间共振峰有时会落到单位圆外一点点。
+            // 一刀切丢掉的话，F2 就经常整个消失（真机上实测：
+            // 12 阶时 F1 有、F2 没有；16 阶时 F2 才出现）。
+            // 反正后面还有频带和带宽两道过滤。
+            if (zr < 1e-12 || zr > 1.05) continue
+            val theta = r.arg()
+            if (theta <= 0.0) continue               // 只取上半平面
             val hz = (theta / (2.0 * Math.PI) * sampleRate).toFloat()
             if (hz < minHz || hz > maxHz) continue
-            // 带宽 = -fs·ln|z| / π
-            val bw = (-sampleRate * kotlin.math.ln(zr) / Math.PI).toFloat()
+            // 带宽 = -fs·ln|z| / π（略微不稳时取绝对值）
+            val bw = kotlin.math.abs((-sampleRate * kotlin.math.ln(zr) / Math.PI).toFloat())
             if (bw <= 0f || bw > maxBandwidthHz) continue
             out += Formant(hz, bw)
         }

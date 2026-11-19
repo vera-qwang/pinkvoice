@@ -11,7 +11,7 @@ import androidx.compose.runtime.setValue
 import com.vera.pinkvoice.audio.VoiceEngine
 import com.vera.pinkvoice.ui.PinkVoiceTheme
 import com.vera.pinkvoice.ui.ThemeMode
-import com.vera.pinkvoice.ui.VoiceScreen
+import com.vera.pinkvoice.ui.PinkVoiceApp
 
 class MainActivity : ComponentActivity() {
 
@@ -27,7 +27,7 @@ class MainActivity : ComponentActivity() {
                 ThemeMode.Dark -> true
             }
             PinkVoiceTheme(darkTheme = dark) {
-                VoiceScreen(
+                PinkVoiceApp(
                     engine = engine,
                     themeMode = themeMode,
                     onThemeModeChange = { mode ->
