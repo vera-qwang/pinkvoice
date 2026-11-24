@@ -40,17 +40,19 @@ import com.vera.pinkvoice.audio.VowelRecognizer
 import com.vera.pinkvoice.audio.VowelTarget
 
 /**
- * 训练页。
+ * F1/F2 页的内容：元音图 + 稳态度 + 音色轴。
  *
- * 监测页回答「我现在多高」，训练页回答「我这个音**准不准、稳不稳**」。
+ * F0 页回答「我现在多高」，这一页回答「我这个音**准不准、稳不稳**」。
  *
  * 三块内容：
  * 1. **元音图** —— 你在元音空间里的位置，和目标的距离
  * 2. **稳态度** —— 帧与帧之间的抖动（这是"稳态训练"的核心指标）
  * 3. **音色轴** —— 薄虚↔厚实（需要个人基准才有意义）
+ *
+ * 头部、控制条、导航栏由根页面 [PinkVoiceApp] 统一管。
  */
 @Composable
-fun TrainingScreen(
+fun FormantContent(
     engine: VoiceEngine,
     modifier: Modifier = Modifier,
 ) {
@@ -80,31 +82,16 @@ fun TrainingScreen(
             .padding(top = 10.dp, bottom = 8.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // ---------------- 标题 ----------------
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "元音训练",
-                fontSize = 19.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground,
-            )
-            Spacer(Modifier.weight(1f))
-            Text(
-                text = "声道 ${"%.1f".format(FormantNormalizer.userLengthCm)} cm",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.width(10.dp))
-            // 训练页自己也要能开麦——不然得切回监测页才能练。
-            ListenButton(
-                engine = engine,
-                compact = true,
-                modifier = Modifier.width(132.dp),
-            )
-        }
+        // ---------------- 声道长度 ----------------
+        //
+        // 折算到标准声道长度是元音图能跨人比较的前提，
+        // 所以一直显示着——用户能看到自己的基准值。
+        Text(
+            text = "声道 ${"%.1f".format(FormantNormalizer.userLengthCm)} cm" +
+                "（折算到 17.5 cm 标准，元音图才能跨人比较）",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
 
         // ---------------- 目标元音 ----------------
         Row(
@@ -212,7 +199,7 @@ fun TrainingScreen(
                     valueText = "${(quality.stability * 100).toInt()}%",
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(44.dp),
+                        .height(38.dp),
                     leftLabel = "抖",
                     rightLabel = "稳",
                 )
@@ -222,7 +209,7 @@ fun TrainingScreen(
                     valueText = quality.timbre.label,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(44.dp),
+                        .height(38.dp),
                     leftLabel = "薄/虚",
                     rightLabel = "厚/实",
                 )
@@ -254,7 +241,7 @@ fun TrainingScreen(
                         text = when {
                             quality.capturingBaseline -> "取消（${(quality.baselineProgress * 100).toInt()}%）"
                             quality.timbre.hasBaseline -> "重录基准"
-                            else -> "录基准：念 /a/ 持续 3 秒"
+                            else -> "录基准：念 /a/ 3 秒"
                         },
                         fontSize = 13.sp,
                     )
@@ -271,8 +258,7 @@ fun TrainingScreen(
                     )
                 } else if (!quality.timbre.hasBaseline) {
                     Text(
-                        text = "没有基准时音色轴没有意义：厚薄没有绝对标准，" +
-                            "得跟自己的声音比。录一段 /a/ 作为基准。",
+                        text = "厚薄没有绝对标准，得跟自己的声音比。",
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

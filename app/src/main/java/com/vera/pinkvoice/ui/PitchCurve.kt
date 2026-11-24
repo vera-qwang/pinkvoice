@@ -135,7 +135,9 @@ fun PitchCurve(
             val plotLeft = LEFT_AXIS_DP.toPx()
             val plotRight = (size.width - RIGHT_AXIS_DP.toPx()).coerceAtLeast(plotLeft + 1f)
             val plotWidth = plotRight - plotLeft
-            drawBands(textMeasurer, plotLeft, plotWidth, size.height, fMin, fMax, palette)
+            // 绘图区高度扣掉底部的音名标签位置
+            val plotH = (size.height - BOTTOM_LABEL_DP.toPx()).coerceAtLeast(1f)
+            drawBands(textMeasurer, plotLeft, plotWidth, plotH, fMin, fMax, palette)
 
             // 半音网格：每半音一条淡线，看得出当前唱在哪个音级。
             //
@@ -152,7 +154,7 @@ fun PitchCurve(
             // 被 copy(alpha = 1f) 整个替换掉，八度线就成了 100% 纯黑/纯白。
             for (midi in midiRange(fMin, fMax)) {
                 val hz = PitchMath.midiToHz(midi).toFloat()
-                val y = yFor(hz, size.height, fMin, fMax)
+                val y = yFor(hz, plotH, fMin, fMax)
                 val isOctave = midi % 12 == 0
                 drawLine(
                     color = palette.grid.copy(alpha = if (isOctave) 0.55f else 0.18f),
@@ -173,7 +175,7 @@ fun PitchCurve(
             for (midi in midiRange(fMin, fMax)) {
                 if (!isWholeTone(midi)) continue
                 val hz = PitchMath.midiToHz(midi)
-                val y = yFor(hz.toFloat(), size.height, fMin, fMax)
+                val y = yFor(hz.toFloat(), plotH, fMin, fMax)
                 val color = bandColorOf(hz.toFloat(), palette)
                 val isOctave = midi % 12 == 0
 
@@ -214,6 +216,8 @@ fun PitchCurve(
             val fMax = range.max
             val w = size.width
             val h = size.height
+            // 和静态层一样，底部留出音名标签的位置
+            val plotH = (h - BOTTOM_LABEL_DP.toPx()).coerceAtLeast(1f)
             val plotLeft = LEFT_AXIS_DP.toPx()
             val plotRight = (w - RIGHT_AXIS_DP.toPx()).coerceAtLeast(plotLeft + 1f)
             val plotWidth = plotRight - plotLeft
@@ -236,7 +240,7 @@ fun PitchCurve(
                         started = false
                         continue
                     }
-                    val y = yFor(hz, h, fMin, fMax)
+                    val y = yFor(hz, plotH, fMin, fMax)
                     // 时间上出现大跳变说明中间断了（清音/无声），断开曲线
                     if (started && t - lastT > 120_000_000L) started = false
                     if (!started) {
@@ -266,7 +270,7 @@ fun PitchCurve(
             // 落在男声区就是蓝色。这样虚线和背景色带、左侧音名、
             // 右上角的大音名是同一套语义，不用再解释"这个蓝是什么意思"。
             if (avgHz != null && avgHz > 0f) {
-                val y = yFor(avgHz, h, fMin, fMax)
+                val y = yFor(avgHz, plotH, fMin, fMax)
                 drawLine(
                     color = bandColorOf(avgHz, palette).copy(alpha = 0.55f),
                     start = Offset(plotLeft, y),
@@ -286,7 +290,7 @@ fun PitchCurve(
             // 颜色跟着当前音高所在的音域走。
             val heard = history.sampleAt(endNs)
             if (heard != null && heard.hz > 0f && heard.clarity >= 0.3f) {
-                val y = yFor(heard.hz, h, fMin, fMax)
+                val y = yFor(heard.hz, plotH, fMin, fMax)
                 val ink = bandColorOf(heard.hz, palette)
                 drawLine(
                     color = ink,
@@ -441,6 +445,14 @@ private fun DrawScope.drawLabel(
  * 右栏只放频率（三位数，9 sp 约 20 dp）。
  */
 private val LEFT_AXIS_DP = 22.dp
+
+/**
+ * 绘图区底部给音名标签留的位置（dp）。
+ *
+ * 最低音的标签画在 `y - 7px`，10 sp 的文字会往下探出绘图区约 6 px。
+ * 不留这一条的话，最下面那个音名会被画布裁掉半截。
+ */
+private val BOTTOM_LABEL_DP = 12.dp
 private val RIGHT_AXIS_DP = 26.dp
 
 /** 自然音的半音偏移（C D E F G A B）。 */

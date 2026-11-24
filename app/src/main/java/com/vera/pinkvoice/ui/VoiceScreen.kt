@@ -113,11 +113,15 @@ private data class Readout(
  *   4. 控制条   —— 开始/停止 + 返听音量
  * 调参类（对齐补偿、延迟明细、外放提示）收进底部设置面板，不占主界面空间。
  */
+/**
+ * F0 页的内容：读数卡 + 曲线卡。
+ *
+ * 头部、控制条、底部导航、设置面板都由根页面 [PinkVoiceApp] 统一管 ——
+ * 两个页面共用一套外壳，切换时不会一会儿有标题一会儿没有。
+ */
 @Composable
-fun VoiceScreen(
+fun MonitorContent(
     engine: VoiceEngine,
-    themeMode: ThemeMode = ThemeMode.System,
-    onThemeModeChange: (ThemeMode) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -127,101 +131,10 @@ fun VoiceScreen(
     val status by engine.status.collectAsState()
     val running = status is EngineStatus.Running
 
-    var granted by remember {
-        mutableStateOf(
-            context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
-                PackageManager.PERMISSION_GRANTED,
-        )
-    }
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted = it }
-
-    // 返听音量 0..2（0%–200%），默认 100%
-    var gain by remember { mutableFloatStateOf(1.0f) }
     // 频率轴的可见范围：曲线上滑动 / 双指缩放可以调
     val freqRange = rememberFrequencyRange()
-    // 返听降噪强度：只影响耳朵里听到的，不影响曲线
-    // 降噪默认门限 -50 dB
-    var noiseLevel by remember { mutableFloatStateOf(DEFAULT_NOISE_LEVEL) }
-    // 回放窗口长度（秒）。
-    //
-    // 存进偏好里——用户明确选过的选项，不该每次开 App 都退回默认。
-    var replayWindow by remember {
-        mutableIntStateOf(
-            Prefs.replayWindowSeconds(context, VoiceEngine.DEFAULT_REPLAY_SECONDS)
-        )
-    }
-    // 当前是否正在回放
-    val replaying = engine.replaying.collectAsState().value
-    // 回放提示（比如"还没录到东西"），null = 不显示
-    var replayHint by remember { mutableStateOf<String?>(null) }
-    // 提示显示几秒后自动消失——一直挂着占地方
-    LaunchedEffect(replayHint) {
-        if (replayHint != null) {
-            delay(3000)
-            replayHint = null
-        }
-    }
-    var showSettings by remember { mutableStateOf(false) }
-    var device by remember { mutableStateOf(AudioOutputInfo.current(audioManager)) }
 
-    // **没有外接耳机就不返听**。
-    //
-    // 手机内置扬声器返听时，麦克风会拾取自己的监听声形成正反馈啸叫，
-    // 分析到的也是被延迟污染的声音。与其把音量限到 35% 还留着这个坑，
-    // 不如直接不返听——只做音高监测，接上耳机自动恢复。
-    val monitoringAvailable = device.kind != AudioOutputInfo.Kind.SPEAKER
-
-    // **实时检测输出设备变化**。
-    //
-    // 之前只在启动监听时读一次设备，于是插上/拔掉耳机都要重启 App 才能生效。
-    // AudioDeviceCallback 会在设备增删时回调，这里据此刷新。
-    //
-    // 系统切换音频路由是异步的（设备回调先到、路由后定），所以回调里
-    // 延迟一小会儿再读一次，读到的才是真正生效的设备。
-    DisposableEffect(audioManager) {
-        val handler = Handler(Looper.getMainLooper())
-        var pending: Runnable? = null
-        // 局部函数要声明在匿名对象之前才能被它引用
-        lateinit var scheduleRefresh: () -> Unit
-        val callback = object : AudioDeviceCallback() {
-            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
-                scheduleRefresh()
-            }
-
-            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
-                scheduleRefresh()
-            }
-        }
-        scheduleRefresh = {
-            pending?.let { handler.removeCallbacks(it) }
-            val r = Runnable {
-                pending = null
-                device = AudioOutputInfo.current(audioManager)
-            }
-            pending = r
-            handler.postDelayed(r, DEVICE_SETTLE_MS)
-        }
-        audioManager.registerAudioDeviceCallback(callback, handler)
-        onDispose {
-            pending?.let { handler.removeCallbacks(it) }
-            audioManager.unregisterAudioDeviceCallback(callback)
-        }
-    }
-
-    // 设备变化后要重新判定能不能返听。运行中切换会用引擎的运行时接口
-    // 立刻关掉/开启返听通道——蓝牙耳机被拔掉时必须马上关，
-    // 否则声音会从手机扬声器播出来，麦克风再拾取形成啸叫。
-    LaunchedEffect(monitoringAvailable) {
-        engine.applyMonitoringEnabled(monitoringAvailable)
-    }
-    LaunchedEffect(gain) { engine.monitorGain = gain }
-    LaunchedEffect(noiseLevel) { engine.noiseReductionLevel = noiseLevel }
-    LaunchedEffect(replayWindow) {
-        engine.replayWindowSeconds = replayWindow
-        Prefs.setReplayWindowSeconds(context, replayWindow)
-    }
+    // 音量/降噪/回放窗口由根页面统一管（两个页面共用）。
 
     // 视觉对齐量 = 输出延迟 - 分析延迟（推导见 README），蓝牙附加部分手动补
     //
@@ -303,47 +216,6 @@ fun VoiceScreen(
             .padding(top = 10.dp, bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // ---------------- 状态条 ----------------
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            // 标题分两段："Pink" 用品牌粉，"Voice" 保持中性色。
-            // 用富文本而不是两段 Text，否则两者的基线会差一点点。
-            Text(
-                text = buildAnnotatedString {
-                    withStyle(
-                        SpanStyle(
-                            color = palette.trace,
-                            fontWeight = FontWeight.Bold,
-                        ),
-                    ) {
-                        append("Pink")
-                    }
-                    withStyle(
-                        SpanStyle(
-                            color = MaterialTheme.colorScheme.onBackground,
-                            fontWeight = FontWeight.Bold,
-                        ),
-                    ) {
-                        append("Voice")
-                    }
-                },
-                fontSize = 19.sp,
-                fontWeight = FontWeight.Bold,
-            )
-            Spacer(Modifier.weight(1f))
-            DeviceChip(device.kind, monitoringAvailable) { showSettings = true }
-            IconButton(onClick = { showSettings = true }) {
-                Icon(
-                    imageVector = Icons.Default.Settings,
-                    contentDescription = "设置",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-
         // ---------------- 读数卡 ----------------
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -483,112 +355,6 @@ fun VoiceScreen(
             }
         }
 
-        // ---------------- 回放行 ----------------
-        //
-        // 单独一行，不跟主按钮挤在一起。
-        // 窄屏（360 dp）上三个元素并排的话：主按钮只剩 72 dp，
-        // 「开始监听 + 返听」根本放不下。
-        // ---------------- 控制条 ----------------
-        //
-        // 两件东西并排：监听 / 回放。
-        //
-        // 返听音量挪到设置面板了——底部只留主要动作，
-        // 挤在一起反而都不好用。
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Button(
-                onClick = {
-                    when {
-                        running -> engine.stop()
-                        granted -> engine.start()
-                        else -> permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                    }
-                },
-                modifier = Modifier
-                    .weight(1f)
-                    .height(54.dp),
-                shape = RoundedCornerShape(16.dp),
-                contentPadding = PaddingValues(horizontal = 10.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (running) {
-                        MaterialTheme.colorScheme.surfaceVariant
-                    } else {
-                        MaterialTheme.colorScheme.primary
-                    },
-                    contentColor = if (running) {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    } else {
-                        MaterialTheme.colorScheme.onPrimary
-                    },
-                ),
-            ) {
-                if (running) {
-                    StopGlyph(color = MaterialTheme.colorScheme.onSurfaceVariant)
-                } else {
-                    StatusDot(Color.White, 10.dp)
-                }
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = when {
-                        running -> "停止监听"
-                        !granted -> "授予麦克风权限"
-                        else -> "开始监听"
-                    },
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                )
-            }
-
-            // 回放：和监听按钮并排。
-            //
-            // 只在监听中才有意义（没录到东西可放）。
-            // 扬声器模式也能用——回放播的是**已经录下的**声音，
-            // 不会形成正反馈啸叫（实时返听才有那个问题）。
-            if (running) {
-                Button(
-                    onClick = {
-                        // 状态判断交给引擎——UI 看到的 replaying 可能滞后一帧，
-                        // 拿它来决定"开始还是停止"会点不动。
-                        when (engine.toggleReplay()) {
-                            ReplayAction.STARTED -> replayHint = null
-                            ReplayAction.STOPPED -> replayHint = null
-                            ReplayAction.FAILED -> replayHint = "还没录到声音，稍等一下再试"
-                        }
-                    },
-                    enabled = true,
-                    modifier = Modifier
-                        .width(84.dp)
-                        .height(54.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    contentPadding = PaddingValues(horizontal = 8.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (replaying) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.surfaceVariant
-                        },
-                        contentColor = if (replaying) {
-                            MaterialTheme.colorScheme.onPrimary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                    ),
-                ) {
-                    Text(
-                        text = if (replaying) "■ 停止" else "▶ 回放",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                    )
-                }
-            }
-
-        }
-
         (status as? EngineStatus.Error)?.let { err ->
             Text(
                 text = err.message,
@@ -598,22 +364,6 @@ fun VoiceScreen(
         }
     }
 
-    if (showSettings) {
-        SettingsSheet(
-            onDismiss = { showSettings = false },
-            engine = engine,
-            device = device,
-            monitoringAvailable = monitoringAvailable,
-            themeMode = themeMode,
-            onThemeModeChange = onThemeModeChange,
-            noiseLevel = noiseLevel,
-            onNoiseLevelChange = { noiseLevel = it },
-            replayWindow = replayWindow,
-            onReplayWindowChange = { replayWindow = it },
-            gain = gain,
-            onGainChange = { gain = it },
-        )
-    }
 }
 
 /** UI 刷新限速：30 fps。屏幕是 120 Hz，但曲线与读数都是慢变量。 */
@@ -625,7 +375,7 @@ private const val UI_FRAME_INTERVAL_MS = 33L
  * 系统切换音频路由是异步的：AudioDeviceCallback 先回调，
  * 路由过一会儿才定。读太早会拿到还没切换的旧设备。
  */
-private const val DEVICE_SETTLE_MS = 400L
+internal const val DEVICE_SETTLE_MS = 400L
 
 /**
  * 曲线窗口时长（ms）。
@@ -650,7 +400,7 @@ val ThemeMode.displayName: String
  * 所以用中性色而不是红色警示。接上耳机就变回"蓝牙" / "有线"。
  */
 @Composable
-private fun DeviceChip(
+internal fun DeviceChip(
     kind: AudioOutputInfo.Kind,
     monitoringAvailable: Boolean,
     onClick: () -> Unit,
@@ -689,7 +439,7 @@ private fun DeviceChip(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsSheet(
+internal fun SettingsSheet(
     onDismiss: () -> Unit,
     engine: VoiceEngine,
     device: AudioOutputInfo.Device,
@@ -1006,7 +756,7 @@ private fun LabeledSlider(
 private const val DEFAULT_NOISE_THRESHOLD_DB = -50f
 
 /** 对应 [DEFAULT_NOISE_THRESHOLD_DB] 的降噪强度（0..1）。 */
-private val DEFAULT_NOISE_LEVEL =
+internal val DEFAULT_NOISE_LEVEL =
     (DEFAULT_NOISE_THRESHOLD_DB - NoiseGate.MIN_THRESHOLD_DB) /
         (NoiseGate.MAX_THRESHOLD_DB - NoiseGate.MIN_THRESHOLD_DB)
 

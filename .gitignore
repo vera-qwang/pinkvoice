@@ -24,3 +24,6 @@ release.keystore
 
 # 本地发布签名密钥（绝不能提交）
 .release-secrets/
+
+# 发布产物（APK / 源码包），走 GitHub Release 上传，不进仓库
+dist/
