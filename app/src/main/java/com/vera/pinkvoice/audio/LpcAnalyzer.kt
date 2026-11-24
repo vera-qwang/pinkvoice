@@ -39,6 +39,15 @@ import kotlin.math.sqrt
  * 3. **自相关**
  * 4. **Levinson-Durbin 递推** → LPC 系数
  */
+/**
+ * F2 高于这个频率就"可疑"了 —— 已经进 F3 的地盘。
+ *
+ * 女声的 F2 能到 2800，所以这个门限不能定得太低。
+ * 真正区分 /i/（F2=2290，正常）和「F2 丢了、拿 F3 顶上来」
+ * 的是包络上 F1 之下还有没有显著脊。
+ */
+private const val SUSPICIOUS_F2_HZ = 2000f
+
 class LpcAnalyzer(
     private val sampleRate: Int = 16000,
     /**
@@ -375,12 +384,115 @@ class LpcAnalyzer(
      * [extractFormantsByRoots]。
      */
     fun extractFormants(): Formants {
-        val list = extractFormantsByRoots()
-        return Formants(
-            list.getOrNull(0)?.hz ?: 0f,
-            list.getOrNull(1)?.hz ?: 0f,
-            list.getOrNull(2)?.hz ?: 0f,
-        )
+        val roots = extractFormantsByRoots()
+        if (roots.isEmpty()) return Formants(0f, 0f, 0f)
+
+        val f1 = roots[0].hz
+        var f2 = roots.getOrNull(1)?.hz ?: 0f
+        var f3 = roots.getOrNull(2)?.hz ?: 0f
+
+        // ---------------- F2 校验 ----------------
+        //
+        // **不能只按频率取前三个根。**
+        //
+        // 真信号里 F2 偶尔会整个消失（共振峰被噪声淹没，
+        // 或者带宽超限被过滤掉）。这时候按频率取第二个根，
+        // 拿到的是 **F3** —— 界面上显示「F2 2250 Hz」，
+        // 看着挺像回事，其实完全不对。
+        //
+        // 真机实测 /u/（F1=300, F2=870, F3=2240）就是这样：
+        // F2 根丢了，界面报 F2=2253，还把元音认成了「衣」。
+        //
+        // 判据：候选 F2 高得可疑（> 2000 Hz，已经进 F3 的地盘），
+        // 而包络上 F1 之上、2000 Hz 以下**还有一个显著脊** ——
+        // 那才是 F2，高根是 F3。
+        //
+        // 注意 /i/（F1=270, F2=2290）**不能**被误判：
+        // 它的 470–2000 Hz 之间本来就没有共振峰，
+        // 包络上找不到显著脊，所以 F2 保持 2290。
+        if (f2 > SUSPICIOUS_F2_HZ && f1 > 0f) {
+            val ridge = envelopeLocalMaxBetween(f1 + 250f, f2)
+            if (ridge > 0f && envelopeDb(ridge) > envelopeDb(f2) + 1f) {
+                f2 = ridge
+                f3 = roots.getOrNull(1)?.hz ?: 0f
+            }
+        }
+        return Formants(f1, f2, f3)
+    }
+
+    /**
+     * 包络在 (loHz, hiHz) 区间里**最高的一个局部极大**的位置。
+     *
+     * 跟 [firstProminentPeak] 的区别：不看"突出度"，
+     * 只看是不是局部极大。
+     *
+     * 突出度在这里不合适 —— LPC 包络在两个共振峰之间很平滑，
+     * 谷底离峰顶可能只有 1–2 dB，用 1.5 dB 的门限会把
+     * 真正的 F2 判成"不显著"（实测 /a/ 和 /ao/ 全被判丢了）。
+     *
+     * @return 频率，找不到返回 0
+     */
+    private fun envelopeLocalMaxBetween(
+        loHz: Float,
+        hiHz: Float,
+        stepHz: Float = 10f,
+    ): Float {
+        if (!valid || hiHz <= loHz) return 0f
+        var best = 0f
+        var bestVal = -1e9f
+        var prev2 = envelopeDb(loHz - stepHz)
+        var prev1 = envelopeDb(loHz)
+        var f = loHz + stepHz
+        while (f <= hiHz) {
+            val cur = envelopeDb(f)
+            if (prev1 > prev2 && prev1 >= cur && prev1 > bestVal) {
+                bestVal = prev1
+                best = f - stepHz
+            }
+            prev2 = prev1
+            prev1 = cur
+            f += stepHz
+        }
+        return best
+    }
+
+    /**
+     * 包络上 [loHz, hiHz] 区间里的**第一个显著峰**。
+     *
+     * 「显著」= 突出度超过阈值（峰顶比两侧谷底高出多少）。
+     * 周期声源会让包络起伏，靠「是不是局部极大」不够，
+     * 得看它突不突出。
+     *
+     * @return 峰顶频率，找不到返回 0
+     */
+    private fun firstProminentPeak(
+        loHz: Float,
+        hiHz: Float,
+        minProminenceDb: Float = 1.5f,
+    ): Float {
+        if (!valid) return 0f
+        val peaks = findPeaks(loHz.coerceAtLeast(150f), hiHz, stepHz = 10f)
+        for (p in peaks) {
+            val y = envelopeDb(p)
+            // 两侧最近谷底
+            var valley = y
+            var left = p - 10f
+            while (left > 150f) {
+                val v = envelopeDb(left)
+                if (v < valley) valley = v
+                if (v > y) break
+                left -= 10f
+            }
+            var right = p + 10f
+            while (right < 4000f) {
+                val v = envelopeDb(right)
+                if (v < valley) valley = v
+                if (v > y) break
+                right += 10f
+            }
+            if (y - valley >= minProminenceDb) return p
+        }
+        return 0f
     }
 
     /**

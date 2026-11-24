@@ -236,4 +236,6 @@ class LpcAnalyzerTest {
         val l2 = analyze(sig)
         assertEquals(l1.envelopeDb(700f), l2.envelopeDb(700f), 1e-6f)
     }
+
+
 }
