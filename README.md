@@ -18,6 +18,10 @@
 | 特性 | 说明 |
 |---|---|
 | 实时 F0 曲线 | 对数频率轴，半音辅助线，标注男声区 / 女声区参考音域带 |
+| 元音图（F1/F2） | 实时显示你的共振峰位置，认出是哪个元音，告诉你离目标差多远 |
+| 元音稳态训练 | 选一个目标元音，看轨迹稳不稳、抖动多少音分 |
+| 音色轴 | 薄虚 ↔ 厚实，用你自己的声音作基准（录一段 /a/ 即可） |
+| 底部导航 | F0 / F1/F2 两个页面，随时切换 |
 | 音分指针表 | ±50 cent 偏差一眼可见，绿色为唱准区 |
 | 窗口统计 | 平均音高（曲线上有参考线）、平均响度与峰值 |
 | 同步返听 | 与分析并行，延迟 30–80 ms |
@@ -32,11 +36,12 @@
 | 无账号无内购 | 装了直接用，不需要注册，也没有付费墙 |
 
 <div align="center">
-  <img src="docs/screenshots/light-theme-main.png" width="270" alt="浅色主题">
+  <img src="docs/screenshots/light-theme-main.png" width="270" alt="F0 实时音高曲线">
+  <img src="docs/screenshots/formants.png" width="270" alt="元音图 F1/F2">
   <img src="docs/screenshots/dark-theme.png" width="270" alt="深色主题">
 </div>
 
-<p align="center"><sub>浅色 / 深色 / 跟随系统三档外观，设置面板里随时切换</sub></p>
+<p align="center"><sub>F0 曲线 · 元音图 · 浅色 / 深色 / 跟随系统三档外观</sub></p>
 
 <div align="center">
   <img src="docs/screenshots/settings.png" width="300" alt="设置面板">
