@@ -114,6 +114,42 @@ class VoiceQualityAnalyzer(
     /** 连续语音帧计数。 */
     private var voicedRun: Int = 0
 
+    /** 连续无效帧计数（不是语音 / 算不出共振峰）。 */
+    private var invalidRun: Int = 0
+
+    /**
+     * 连续多少帧无效才算「真的没人在说话」。
+     *
+     * ## 为什么不能一帧无效就清空
+     *
+     * 以前**每个**无效帧都会：
+     * ```
+     * formants = (0,0,0)      → 界面上的数字变空
+     * recognized = null       → 元音名消失
+     * holdSeconds = 0         → 保持计时清零
+     * validFrames = 0         → 「读数不稳」标记闪烁
+     * ```
+     *
+     * 但说话时 clarity 本来就会**短暂跌破阈值**，偶发帧也会算不出 F1/F2。
+     * 实测语音段 clarity 的 p10 只有 0.58，意味着约 10% 的帧接近阈值；
+     * 每秒出现几次「清空」→ 界面不停地闪。
+     *
+     * **这是用户反馈「说话的时候数字还在跳」的直接原因。**
+     *
+     * 现在：短暂中断**什么都不动**（画面完全保持），
+     * 连续 8 帧（≈130 ms）无效才真的清空。
+     */
+    private val silenceFrames: Int = 8
+
+    /**
+     * 元音识别的迟滞开关。
+     *
+     * 平滑后的 F1/F2 落在两个元音分界附近时，识别结果会逐帧来回跳 ——
+     * 实测持续 2–3 秒的单个元音，标签能切换 3–15 次
+     * （/i/ 每秒变 5 次），界面上看起来就是「跳」。
+     */
+    private val vowelSwitcher = VowelSwitcher()
+
     /** 训练进度：连续保持在目标区里多久了。 */
     private val targetTracker = TargetTracker()
 
@@ -218,6 +254,27 @@ class VoiceQualityAnalyzer(
     }
 
     /**
+     * 一帧拿不到共振峰：短暂中断就**保持原状**，断够久才清空。
+     *
+     * 见 [silenceFrames] 的说明 —— 这里的关键是
+     * **不要在单帧失败时改动任何对外状态**。
+     */
+    private fun onInvalidFrame() {
+        invalidRun++
+        if (invalidRun <= silenceFrames) return
+
+        // 真的断了：清一次
+        tracker.reset()
+        smoother.reset()
+        vowelSwitcher.reset()
+        formants = LpcAnalyzer.Formants(0f, 0f, 0f)
+        recognized = null
+        recognizedDistance = Float.MAX_VALUE
+        validFrames = 0
+        holdSeconds = targetTracker.update(false)
+    }
+
+    /**
      * 处理一帧（16 kHz 域）。
      *
      * @param samples 分析支路的样本
@@ -229,13 +286,7 @@ class VoiceQualityAnalyzer(
         // 用户没说话时界面也在跳数。
         if (!voiced) {
             voicedRun = 0
-            tracker.add(0f, 0f)
-            smoother.add(0f, 0f)
-            formants = LpcAnalyzer.Formants(0f, 0f, 0f)
-            recognized = null
-            holdSeconds = 0f
-            validFrames = 0
-            targetTracker.update(false)
+            onInvalidFrame()
             return
         }
         // 起音确认：连续几帧都是语音才开始，挡掉噪音里的孤立误判
@@ -267,20 +318,10 @@ class VoiceQualityAnalyzer(
         }
 
         if (!ok || raw.f1 <= 0f || raw.f2 <= 0f) {
-            validFrames = 0
-            // 信号断了就把跟踪器和平滑器都清掉 ——
-            // 留着过期的值显示出来更误导。
-            tracker.reset()
-            smoother.reset()
-            formants = LpcAnalyzer.Formants(0f, 0f, 0f)
-            recognized = null
-            recognizedDistance = Float.MAX_VALUE
-            // 只调一次。调两次的话每个无效帧 missFrames += 2，
-            // 宽限期（2 帧）等于直接失效 ——
-            // 攒了几秒的保持进度会被一个偶发坏帧清零。
-            holdSeconds = targetTracker.update(false)
+            onInvalidFrame()
             return
         }
+        invalidRun = 0
         validFrames++
 
         // 平滑 —— 显示、识别、距离都用平滑后的值。
@@ -298,7 +339,8 @@ class VoiceQualityAnalyzer(
 
         // 元音识别（用平滑后的值，避免结果闪变）
         val r = VowelRecognizer.recognize(smooth.f1, smooth.f2)
-        recognized = r.vowel
+        // 迟滞：新元音要连续赢几帧才认，否则标签会在边界上疯狂切换
+        recognized = vowelSwitcher.update(smooth.f1, smooth.f2, r.vowel)
         recognizedDistance = r.distance
 
         // 训练进度：连续保持在目标区里多久了
