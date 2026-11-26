@@ -1,30 +1,50 @@
 package com.vera.pinkvoice.audio
 
 /**
- * 嗓音质量分析：共振峰、元音识别、稳态度、音色轴。
+ * 嗓音质量分析：共振峰、元音识别、训练进度。
  *
- * ## 挂在哪
+ * ## 数据流
  *
- * 复用现有的分析支路（16 kHz / 1024 窗 / 256 跳）——
- * 也就是 YIN 已经在用的那条路。**不新开采集、不新开线程**，
- * 只是把同一帧数据多算一遍 LPC。
+ * ```
+ * 16 kHz（YIN 用的那条分析支路）
+ *      ↓ 重采样 3:4
+ * 12 kHz  ← LPC 在这上面跑（理由见 [Resampler16kTo12k]）
+ *      ↓ 600 点窗（50 ms）/ 192 点跳（16 ms）
+ * 共振峰 → 平滑 → 识别 / 目标区判定
+ * ```
+ *
+ * 为什么要多一次重采样：LPC 在 12 kHz 上明显更准 ——
+ * 16 kHz 时 F1 的极点会被低频倾斜撑宽、常和邻居合并，
+ * 实测对某些元音**整个丢掉 F1**。这套配置是从 Praat 反推出来的。
  *
  * ## 性能
  *
- * LPC 每帧的算量：1024 点自相关（约 12k 次乘加）+ 12 阶 Levinson
- * + 12 次多项式求根。16 ms 一帧 → 大约每秒 60 次。
- * 在手机上大约是几毫秒的 CPU，占用很低。
+ * Burg 10 阶 + 10 个根。每秒约 60 帧。
+ * 重采样每输出样本约 12 次乘加。
+ * 整体在手机上仍然很轻。
  *
  * 但**默认不开** —— 监测页（f0 曲线）不需要这些，
- * 只有训练页才打开。
+ * 只有训练页才打开（debug 版诊断会强制打开）。
  */
+/** LPC 分析速率。见 [Resampler16kTo12k] 的说明。 */
+private const val LPC_RATE = 12000
+
 class VoiceQualityAnalyzer(
+    /** 输入采样率（分析支路的速率）。 */
     private val sampleRate: Int = 16000,
-    private val windowSize: Int = 1024,
-    /** 跳帧。256 = 16 ms，和 YIN 一致。 */
-    private val hopSize: Int = 256,
 ) {
-    private val lpc = LpcAnalyzer(sampleRate = sampleRate)
+    /** LPC 分析用的速率。 */
+    private val lpcRate: Int = LPC_RATE
+
+    /** 50 ms 窗 —— Praat 默认 25 ms，但 50 ms 在真人录音上更稳。 */
+    private val windowSize: Int = lpcRate / 20
+
+    /** 16 ms 跳，和 YIN 一致，方便时间对齐。 */
+    private val hopSize: Int = lpcRate / 62
+
+    private val resampler = Resampler16kTo12k()
+
+    private val lpc = LpcAnalyzer(sampleRate = lpcRate)
 
     /**
      * F1/F2 的中位数平滑。
@@ -58,6 +78,13 @@ class VoiceQualityAnalyzer(
      */
     private val buf = FloatArray(windowSize + hopSize)
     private var fill = 0
+
+    /** 重采样后的 12 kHz 样本。 */
+    private var rateBuf = FloatArray(sampleRate * 2)
+    private var rateFill = 0
+
+    /** 重采样的输出暂存区。 */
+    private var scratch = FloatArray(1024)
 
     /** 识别出的元音。 */
     @Volatile
@@ -105,17 +132,38 @@ class VoiceQualityAnalyzer(
      * @param count 有效样本数
      */
     fun process(samples: FloatArray, count: Int) {
+        if (count <= 0) return
+
+        // ① 16 kHz → 12 kHz。一次处理整块，产出约 3/4 的样本数。
+        val maxOut = count * 3 / 4 + 8
+        if (scratch.size < maxOut) scratch = FloatArray(maxOut * 2)
+        val n = resampler.process(samples, count, scratch)
+        if (n > 0) {
+            if (rateBuf.size < rateFill + n) {
+                rateBuf = rateBuf.copyOf((rateFill + n) * 2)
+            }
+            System.arraycopy(scratch, 0, rateBuf, rateFill, n)
+            rateFill += n
+        }
+
+        // ② 在 12 kHz 上分帧
         var consumed = 0
-        while (consumed < count) {
-            val chunk = minOf(count - consumed, buf.size - fill)
-            System.arraycopy(samples, consumed, buf, fill, chunk)
+        while (consumed < rateFill) {
+            val chunk = minOf(rateFill - consumed, buf.size - fill)
+            System.arraycopy(rateBuf, consumed, buf, fill, chunk)
             fill += chunk
             consumed += chunk
             while (fill >= windowSize) {
-                processWindow()
+                processWindow(buf, windowSize)
                 System.arraycopy(buf, hopSize, buf, 0, fill - hopSize)
                 fill -= hopSize
             }
+        }
+        if (consumed > 0) {
+            if (rateFill - consumed > 0) {
+                System.arraycopy(rateBuf, consumed, rateBuf, 0, rateFill - consumed)
+            }
+            rateFill -= consumed
         }
     }
 

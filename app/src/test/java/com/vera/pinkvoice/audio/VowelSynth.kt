@@ -114,8 +114,18 @@ internal object VowelSynth {
         return out
     }
 
-    /** 单频点幅度（Goertzel）。 */
+    /**
+     * 单频点幅度（Goertzel）。
+     *
+     * **必须加窗**：不加窗的话频谱泄漏会污染 ±60 Hz 范围内的幅度，
+     * 均衡增益算错，合成出来的频谱比例就不真实
+     * （实测：不加窗时 /u/ 的 F1 被算成 484，加窗后是 319）。
+     */
     private fun levelAt(seg: DoubleArray, freq: Double, winHz: Double = 60.0): Double {
+        val n = seg.size
+        val windowed = DoubleArray(n) { i ->
+            seg[i] * (0.54 - 0.46 * cos(2.0 * PI * i / (n - 1)))
+        }
         var best = 0.0
         var f = maxOf(100.0, freq - winHz)
         while (f <= freq + winHz) {
@@ -123,7 +133,7 @@ internal object VowelSynth {
             val c = 2.0 * cos(wq)
             var s1 = 0.0
             var s2 = 0.0
-            for (x in seg) {
+            for (x in windowed) {
                 val s0 = x + c * s1 - s2
                 s2 = s1
                 s1 = s0
