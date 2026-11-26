@@ -95,6 +95,92 @@ class RealRecordingFormantTest {
         return null
     }
 
+    /**
+     * **显示值不能乱飘。**
+     *
+     * 这是用户反复反馈的问题：「F1/F2 监听的时候还是在乱飘」。
+     *
+     * 有些元音的 F1 极点位置本身就模糊（录音 A 的逐帧 F1 在 234–495
+     * 之间游走），所以关键不在把原始值弄准，而在**显示值要稳**。
+     *
+     * 这里量的是「相邻显示帧之间变化超过 10% 的比例」——
+     * 超过 5% 就说明肉眼会看到数字在跳。
+     */
+    @Test
+    fun displayedValuesAreStable() {
+        val smootherFrames = 17          // 和 FormantSmoother 一致
+        var checked = 0
+        val report = StringBuilder()
+        for ((wav, fmt, name) in cases) {
+            val wavFile = locate(wav) ?: continue
+            val fmtFile = locate(fmt) ?: continue
+            val series = displayedSeries(wavFile, fmtFile) ?: continue
+            checked++
+            if (series.size < 30) continue
+
+            var jumps = 0
+            for (i in 1 until series.size) {
+                val a = series[i - 1]
+                val b = series[i]
+                if (a <= 0f || b <= 0f) continue
+                if (abs(b - a) / a > 0.10f) jumps++
+            }
+            val pct = jumps * 100.0 / (series.size - 1)
+            report.append("%s  跳动 %s%%（%d/%d 帧）\n".format(name, "%.1f".format(pct), jumps, series.size - 1))
+            assertTrue(
+                "${name} 的显示值跳动太频繁（${"%.1f".format(pct)}%），用户会看到数字乱跳\n$report",
+                pct <= 5.0,
+            )
+        }
+        assumeTrue("本地没有录音文件，跳过", checked > 0)
+        println(report.toString())
+    }
+
+    /**
+     * 走 App 的完整显示链路（跟踪器 → 平滑器），返回 F1 序列。
+     */
+    private fun displayedSeries(wav: File, fmt: File): FloatArray? {
+        val (samples, rate) = readWav(wav)
+        require(rate == 48000) { "假定录音是 48 kHz，实际 $rate" }
+        val to16 = decimate3(samples)
+        val r = Resampler16kTo12k()
+        val out = FloatArray(to16.size)
+        val n12 = r.process(to16, to16.size, out)
+
+        val lpc = LpcAnalyzer(sampleRate = 12000, order = 11)
+        val frame = 600
+        lpc.prepare(frame)
+        val tracker = FormantTracker()
+        val smoother = FormantSmoother()
+
+        val times = ArrayList<Double>()
+        for (line in fmt.readLines()) {
+            val p = line.trim().split(Regex("\\s+"))
+            if (p.size < 4 || p[0].isEmpty() || !p[0][0].isDigit()) continue
+            times += p[0].toDouble()
+        }
+        val t0 = times.first()
+        val t1 = times.last()
+        val m = (t1 - t0) * 0.15
+
+        val series = ArrayList<Float>()
+        var start = 0
+        while (start + frame < n12) {
+            val t = start.toDouble() / 12000
+            if (t >= t0 + m && t <= t1 - m) {
+                if (lpc.analyze(out.copyOfRange(start, start + frame), frame)) {
+                    val f = lpc.extractFormants()
+                    val raw = if (f.f1 <= 1100f) f else LpcAnalyzer.Formants(0f, 0f, 0f)
+                    val tracked = tracker.add(raw.f1, raw.f2)
+                    val smooth = smoother.add(tracked.f1, tracked.f2)
+                    series += smooth.f1
+                }
+            }
+            start += 192
+        }
+        return if (series.size < 30) null else series.toFloatArray()
+    }
+
     /** Praat 导出表格的中位数（F1/F2/F3）。 */
     private fun praatMedian(f: File): DoubleArray {
         val rows = ArrayList<DoubleArray>()

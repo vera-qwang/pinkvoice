@@ -48,6 +48,13 @@ class FormantTracker(
      * 3 帧 = 48 ms。够滤掉突发噪声，又不至于让换音显得迟钝。
      */
     private val switchFrames: Int = 3,
+
+    /**
+     * 连续多少帧无效才清空状态。
+     *
+     * 以前任何一帧无效就 reset()，一个坏帧把跟踪状态全扔掉。
+     */
+    private val gapFrames: Int = 6,
 ) {
     private var currentF1 = 0f
     private var currentF2 = 0f
@@ -57,6 +64,9 @@ class FormantTracker(
     private var candidateF2 = 0f
     private var candidateCount = 0
 
+    /** 连续无效帧数。短暂无声不清状态，连续断了才清。 */
+    private var unvoicedRun = 0
+
     /**
      * 加一帧，返回应该显示的值。
      *
@@ -65,9 +75,17 @@ class FormantTracker(
      */
     fun add(f1Hz: Float, f2Hz: Float): LpcAnalyzer.Formants {
         if (f1Hz <= 0f || f2Hz <= 0f) {
-            reset()
-            return LpcAnalyzer.Formants(0f, 0f, 0f)
+            // 以前这里直接 reset()：**一个坏帧就丢掉整个跟踪状态**，
+            // 下一帧变成「第一个值」被直接接受 —— 曲线立刻开始抖。
+            // 现在短暂无效保持原值，连续断 [gapFrames] 帧才清空。
+            unvoicedRun++
+            if (unvoicedRun > gapFrames) {
+                reset()
+                return LpcAnalyzer.Formants(0f, 0f, 0f)
+            }
+            return LpcAnalyzer.Formants(currentF1, currentF2, 0f)
         }
+        unvoicedRun = 0
 
         // 第一个值：直接接受
         if (currentF1 <= 0f) {
@@ -112,6 +130,7 @@ class FormantTracker(
     fun reset() {
         currentF1 = 0f
         currentF2 = 0f
+        unvoicedRun = 0
         candidateF1 = 0f
         candidateF2 = 0f
         candidateCount = 0

@@ -63,15 +63,40 @@ class VowelTrainingTest {
         assertTrue("平滑后抖动应该变小（$rawStd → $smoothStd）", smoothStd < rawStd * 0.8f)
     }
 
+    /**
+     * 单帧无效**不该**清空历史。
+     *
+     * 这是用户反复反馈「F1/F2 还在乱飘」的直接原因之一：
+     * 以前任何一帧无效就 reset()，把 272 ms 的中位数历史全扔掉，
+     * 下一帧从头开始 —— 画面立刻开始抖。
+     *
+     * 现在短暂无效直接保持原值（和 PitchTracker 的补洞思路一致），
+     * 连续断够久才真的清空。
+     */
     @Test
-    fun smootherClearsOnInvalidFrame() {
+    fun smootherHoldsThroughShortGaps() {
         val s = FormantSmoother()
         s.add(700f, 1400f)
         s.add(710f, 1420f)
-        // 信号断了
+        s.add(715f, 1410f)
+        // 断一帧
+        val held = s.add(0f, 0f)
+        assertTrue("短暂中断时应保持原值，而不是清零", held.f1 > 0f)
+        assertTrue("保持的值应该在合理范围", abs(held.f1 - 710f) < 30f)
+        // 恢复后应该接着用历史（不会被从头再来）
+        val resumed = s.add(712f, 1415f)
+        assertEquals("恢复后应延续原来的中位数", 712f, resumed.f1, 15f)
+    }
+
+    /** 断得够久才真的清空。 */
+    @Test
+    fun smootherClearsAfterLongGap() {
+        val s = FormantSmoother()
+        s.add(700f, 1400f)
+        repeat(10) { s.add(0f, 0f) }
         val out = s.add(0f, 0f)
-        assertEquals("信号断了就该清空", 0f, out.f1, 0.01f)
-        assertEquals("信号断了就该清空", 0f, out.f2, 0.01f)
+        assertEquals("信号长时间断了就该清空", 0f, out.f1, 0.01f)
+        assertEquals("信号长时间断了就该清空", 0f, out.f2, 0.01f)
     }
 
     // ---------------------------------------------------------------- 目标区
