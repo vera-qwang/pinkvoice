@@ -11,6 +11,7 @@ import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
 import android.os.Process
 import android.util.Log
+import java.io.File
 import kotlin.math.min
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -764,6 +765,73 @@ class VoiceEngine(
 
             if (n == BLOCK_FRAMES) updateLatency(rec, rate, totalRead)
         }
+    }
+
+    /**
+     * 把内存里最近录到的音频写成 WAV 文件（debug 诊断用）。
+     *
+     * ## 为什么需要
+     *
+     * 要查「App 现场测的 F1 和离线算的不一样」这件事，
+     * 必须拿到**App 现场录的那份原始音频** ——
+     * 同一段数据，一份给 Praat、一份给 App，才能分清是
+     * 「音频不一样」还是「分析不一样」。
+     *
+     * 内存录音器里存的正是 AudioRecord 的原始 PCM，
+     * 所以导出的文件和 Praat 直接读的是同一种东西。
+     *
+     * @param file 目标文件
+     * @param seconds 取最近多少秒
+     * @return 实际写出的秒数（0 表示没录到东西）
+     */
+    fun dumpRecentAudio(file: File, seconds: Int = 20): Float {
+        if (!running) return 0f
+        val bytesPerSecond = activeRate * 2
+        val want = (seconds * bytesPerSecond).coerceAtMost(audioRecorder.availableBytes())
+        if (want <= 0) return 0f
+        val data = ByteArray(want)
+        val got = audioRecorder.snapshotRecent(data, 0, want)
+        if (got <= 0) return 0f
+
+        file.parentFile?.mkdirs()
+        file.outputStream().use { out ->
+            out.write(wavHeader(activeRate, got / 2))
+            out.write(data, 0, got)
+        }
+        return got.toFloat() / (activeRate * 2)
+    }
+
+    /** 生成 16-bit 单声道 WAV 头。 */
+    private fun wavHeader(rate: Int, frames: Int): ByteArray {
+        val h = ByteArray(44)
+        fun putStr(off: Int, s: String) {
+            for (i in s.indices) h[off + i] = s[i].code.toByte()
+        }
+        fun put32(off: Int, v: Int) {
+            h[off] = (v and 0xFF).toByte()
+            h[off + 1] = ((v shr 8) and 0xFF).toByte()
+            h[off + 2] = ((v shr 16) and 0xFF).toByte()
+            h[off + 3] = ((v shr 24) and 0xFF).toByte()
+        }
+        fun put16(off: Int, v: Int) {
+            h[off] = (v and 0xFF).toByte()
+            h[off + 1] = ((v shr 8) and 0xFF).toByte()
+        }
+        val byteRate = rate * 2
+        putStr(0, "RIFF")
+        put32(4, 36 + frames * 2)
+        putStr(8, "WAVE")
+        putStr(12, "fmt ")
+        put32(16, 16)
+        put16(20, 1)          // PCM
+        put16(22, 1)          // 单声道
+        put32(24, rate)
+        put32(28, byteRate)
+        put16(32, 2)          // 块对齐
+        put16(34, 16)         // 位深
+        putStr(36, "data")
+        put32(40, frames * 2)
+        return h
     }
 
     /** 用 AudioTimestamp 估算输入/输出延迟。 */
