@@ -260,6 +260,31 @@ class VoiceQualityAnalyzer(
             }
             rateFill -= consumed
         }
+
+        // 限速**按数据块**做一次，不是按帧。
+        //
+        // 一次 process() 里可能连跑好几帧（解码缓冲凑够了一整窗），
+        // 如果每帧都放行 3%，一块就能累加出几十个百分点 ——
+        // 现场实测出现过 241% 的「单次显示跳变」，就是这么来的。
+        // 放在这里，无论内部跑几帧，界面每块最多看到 3% 的变化。
+        if (formants.f1 > 0f) {
+            val shown = slew.apply(formants.f1, formants.f2)
+            if (shown.f1 > 0f) {
+                formants = LpcAnalyzer.Formants(shown.f1, shown.f2, formants.f3)
+            }
+        }
+
+        // 日志必须打在**限速之后** —— 这才是界面真正看到的数。
+        // 之前打在 processWindow 里（限速前），一次 process() 跑多帧时
+        // 会打出几个中间值，看上去像「138% 的跳变」，其实界面没跳。
+        if (formants.f1 > 0f) {
+            Diagnostics.log(
+                "SHOW f1=%.0f f2=%.0f rec=%s hold=%.1f valid=%d".format(
+                    formants.f1, formants.f2, recognized?.label ?: "-",
+                    holdSeconds, validFrames,
+                ),
+            )
+        }
     }
 
     /**
@@ -275,8 +300,14 @@ class VoiceQualityAnalyzer(
         // 真的断了：清一次
         tracker.reset()
         smoother.reset()
-        slew.reset()
         vowelSwitcher.reset()
+        // **限速器不清** —— 它有记忆才挡得住「中断后恢复」那一跳。
+        //
+        // 现场实测：分析失败 ~130ms 后恢复，限速器如果被清零，
+        // 第一帧会**直接接受**新值（因为 f1<=0 走了首帧直取分支），
+        // 于是 F2 出现 158% 的单帧跳变 —— 那正是用户看到的「跳」。
+        //
+        // 保留它的值，恢复时会从上一个显示值**平滑爬过去**。
         formants = LpcAnalyzer.Formants(0f, 0f, 0f)
         recognized = null
         recognizedDistance = Float.MAX_VALUE
@@ -345,17 +376,7 @@ class VoiceQualityAnalyzer(
         // 但那恰恰是「听起来像不像女性」的一部分。
         val tracked = tracker.add(raw.f1, raw.f2)
         val smooth = smoother.add(tracked.f1, tracked.f2)
-        val shown = slew.apply(smooth.f1, smooth.f2)
-        formants = LpcAnalyzer.Formants(shown.f1, shown.f2, raw.f3)
-
-        // ---- 显示值日志：打的是**最终喂给界面**的值 ----
-        // 用来现场量「说话时到底哪一环在跳」。
-        Diagnostics.log(
-            "SHOW f1=%.0f f2=%.0f rec=%s hold=%.1f valid=%d".format(
-                smooth.f1, smooth.f2, recognized?.label ?: "-",
-                holdSeconds, validFrames,
-            ),
-        )
+        formants = LpcAnalyzer.Formants(smooth.f1, smooth.f2, raw.f3)
 
         // 元音识别（用平滑后的值，避免结果闪变）
         val r = VowelRecognizer.recognize(smooth.f1, smooth.f2)
@@ -392,6 +413,8 @@ class VoiceQualityAnalyzer(
         recognizedDistance = Float.MAX_VALUE
         tracker.reset()
         smoother.reset()
+        slew.reset()
+        vowelSwitcher.reset()
         targetTracker.reset()
         holdSeconds = 0f
     }
