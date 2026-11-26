@@ -41,10 +41,16 @@ class VowelSwitcher(
     /**
      * 距离裕度（音分）。
      *
-     * 60 音分 ≈ 3.5% 的频差 —— 比元音之间的实际距离（数百音分）小得多，
-     * 只够挡住分界附近的摆动，不会让真正的换音变迟钝。
+     * 250 音分 ≈ 15% 的频差。
+     *
+     * 原来是 60 音分，实测**不够**：现场数据里用户发一个持续的「啊」，
+     * 标签在 4.6 秒内切了 6 次（啊→诶→哎→空→乌→啊）。
+     *
+     * 原因是实测点 (F1≈527, F2≈1354) 正好卡在「啊」(730/1090) 和
+     * 「诶」(530/1840) **中间** —— 谁都不明显更近，F1 飘几十 Hz
+     * 最近邻就翻。250 音分要求「新元音明显更近」才切。
      */
-    private val marginCents: Float = 60f,
+    private val marginCents: Float = 250f,
 ) {
     private var current: VowelTarget? = null
     private var candidate: VowelTarget? = null

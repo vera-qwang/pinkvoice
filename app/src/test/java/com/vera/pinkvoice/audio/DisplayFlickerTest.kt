@@ -136,11 +136,15 @@ class DisplayFlickerTest {
             while (s + hop <= x.size) {
                 val t = s.toDouble() / 16000
                 if (t < t0 || t > t1) { s += hop; continue }
-                val seg = x.copyOfRange(s, minOf(s + win, x.size))
-                yin.process(seg, seg.size) { hz, clarity, _ ->
+                // YIN 用 64 ms 窗，但**分析器必须喂连续数据**：
+                // 之前喂 1024 窗却只前进 256，等于每块数据被处理 4 次，
+                // 一次 process() 里跑了 4 帧，限速器的 3% 变成 12%。
+                val yinSeg = x.copyOfRange(s, minOf(s + win, x.size))
+                yin.process(yinSeg, yinSeg.size) { hz, clarity, _ ->
                     qa.voiced = hz > 0f && clarity >= 0.5f
                     if (!qa.voiced) unvoicedFrames++
                 }
+                val seg = x.copyOfRange(s, minOf(s + hop, x.size))
                 qa.process(seg, seg.size)
 
                 frames++
@@ -151,8 +155,13 @@ class DisplayFlickerTest {
                 // F2 也要稳 —— /o/ 的原始 F2 抖动实测高达 425 Hz
                 if (hasValue) {
                     val f2 = qa.formants.f2
-                    if (prevF2 > 0f && kotlin.math.abs(f2 - prevF2) / prevF2 > 0.10f) f2Jumps++
+                    if (prevF2 > 0f && kotlin.math.abs(f2 - prevF2) / prevF2 > 0.10f) {
+                        f2Jumps++
+                    }
                     prevF2 = f2
+                } else {
+                    // 断过一次就重新开始比 —— 静音前后的差异不算「跳」
+                    prevF2 = 0f
                 }
 
                 val hasVowel = qa.recognized != null
