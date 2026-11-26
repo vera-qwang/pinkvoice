@@ -86,7 +86,21 @@ class VoiceEngine(
         private const val PUBLISH_INTERVAL_NS = 125_000_000L
 
         /** 依次尝试的录音采样率：很多机型在 VOICE_RECOGNITION 源下只支持 16 kHz。 */
-        private val RATE_CANDIDATES = intArrayOf(48000, 44100, 16000)
+        /**
+         * 采集速率候选。
+         *
+         * **只放能整除到 16 kHz 的**。
+         *
+         * 分析支路固定 16 kHz —— LPC 的参数（阶数、预加重、窗长）
+         * 全是在 16 kHz 下标定的，换速率会整体失准。
+         *
+         * 之前 44100 也在列表里，`rate / (rate / 16000)` 的整数除法
+         * 算出 44100/2 = 22050，分析支路变成了 22.05 kHz，
+         * 但分析器仍按 16 kHz 换算 —— 所有共振峰乘 16000/22050 = 0.726。
+         * 48 kHz 机型碰不到，44.1 kHz 机型（部分设备只支持这个）
+         * 会整条链路错掉。
+         */
+        private val RATE_CANDIDATES = intArrayOf(48000, 16000)
     }
 
     private val _status = MutableStateFlow<EngineStatus>(EngineStatus.Idle)
@@ -198,15 +212,6 @@ class VoiceEngine(
         }
 
     /** 开始录基准（音色轴的个人基准 + 声道长度校准）。 */
-    fun startBaselineCapture() {
-        quality?.startBaseline()
-    }
-
-    /** 取消录基准。 */
-    fun cancelBaselineCapture() {
-        quality?.cancelBaseline()
-    }
-
     /** 质量分析的结果（给 UI 订阅）。 */
     private val _qualityState = MutableStateFlow(QualityState.EMPTY)
     val qualityState: StateFlow<QualityState> = _qualityState.asStateFlow()
@@ -275,11 +280,13 @@ class VoiceEngine(
 
     /** @return null 表示成功，否则返回错误描述。 */
     private fun tryStart(rate: Int): String? {
-        val analysisRate = if (rate >= preferredAnalysisRate) {
-            rate / (rate / preferredAnalysisRate)
-        } else {
-            rate
+        // 分析支路固定 16 kHz。不整除的速率直接跳过 ——
+        // 硬算的话会得到 22050 这种非预期速率，
+        // 而分析器仍按 16 kHz 换算，结果整体偏。
+        if (rate < preferredAnalysisRate || rate % preferredAnalysisRate != 0) {
+            return "设备不支持 ${rate}Hz（无法整除到 ${preferredAnalysisRate}Hz）"
         }
+        val analysisRate = preferredAnalysisRate
         val decimation = (rate / analysisRate).coerceAtLeast(1)
 
         val minRec = AudioRecord.getMinBufferSize(rate, IN_CHANNEL, ENCODING)
@@ -724,7 +731,12 @@ class VoiceEngine(
                 val captureNs = tsNs + (analysedFrame - tsFrame) * 1_000_000_000L / rate
                 // 质量分析：和 YIN 共用同一份 16 kHz 数据，
                 // 但各自维护自己的滑动窗口（窗口/跳帧相同）。
-                quality?.process(floatsAnalysis, m)
+                // 诊断模式（debug 版）下强制启用质量分析 ——
+            // 否则只有在 F1/F2 页才跑 LPC，抓不到诊断数据。
+            if (Diagnostics.enabled && quality == null) {
+                quality = VoiceQualityAnalyzer(sampleRate = activeAnalysisRate)
+            }
+            quality?.process(floatsAnalysis, m)
 
                 detector.process(floatsAnalysis, m) { hz, clarity, rms ->
                     history.add(captureNs, hz, clarity, rms)
@@ -808,14 +820,9 @@ class VoiceEngine(
         val q = quality ?: return
         _qualityState.value = QualityState(
             formants = q.formants,
-            tilt = q.tilt,
             recognized = q.recognized,
             recognizedDistance = q.recognizedDistance,
-            stability = q.stabilityScore,
-            timbre = q.timbreReading,
             valid = q.validFrames > 4,
-            baselineProgress = q.baselineProgress,
-            capturingBaseline = q.capturingBaseline,
             holdSeconds = q.holdSeconds,
         )
     }

@@ -18,6 +18,9 @@ class MainActivity : ComponentActivity() {
     private val engine = VoiceEngine()
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // debug 版默认打开共振峰诊断日志（release 不打）
+        com.vera.pinkvoice.audio.Diagnostics.enabled =
+            (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
         super.onCreate(savedInstanceState)
         setContent {
             var themeMode by remember { mutableStateOf(Prefs.themeMode(this@MainActivity)) }

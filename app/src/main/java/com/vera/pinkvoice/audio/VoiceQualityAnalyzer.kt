@@ -25,7 +25,6 @@ class VoiceQualityAnalyzer(
     private val hopSize: Int = 256,
 ) {
     private val lpc = LpcAnalyzer(sampleRate = sampleRate)
-    private val stability = StabilityTracker()
 
     /**
      * F1/F2 的中位数平滑。
@@ -36,8 +35,20 @@ class VoiceQualityAnalyzer(
      */
     private val smoother = FormantSmoother()
 
+    /**
+     * 共振峰跟踪器。
+     *
+     * 放在平滑**之前**：跟踪器负责压住离群帧（连续几帧的坏读数），
+     * 平滑负责把剩下的抖动磨平。
+     * 顺序反过来的话，平滑器会把坏帧也吸进来。
+     */
+    private val tracker = FormantTracker()
+
     /** 训练进度：连续保持在目标区里多久了。 */
     private val targetTracker = TargetTracker()
+
+    /** 诊断计数（每 16 帧打一次）。 */
+    private var diagFrame = 0
 
     /**
      * 滑动缓冲。
@@ -47,9 +58,6 @@ class VoiceQualityAnalyzer(
      */
     private val buf = FloatArray(windowSize + hopSize)
     private var fill = 0
-
-    /** 音色轴（含个人基准）。 */
-    val timbre = TimbreAxis()
 
     /** 识别出的元音。 */
     @Volatile
@@ -61,43 +69,10 @@ class VoiceQualityAnalyzer(
     var recognizedDistance: Float = Float.MAX_VALUE
         private set
 
-    /** 当前稳态度（0..1）。 */
-    @Volatile
-    var stabilityScore: Float = 0f
-        private set
-
-    /** 当前的音色轴读数。 */
-    @Volatile
-    var timbreReading: TimbreAxis.Reading = TimbreAxis.Reading(0f, 0f, 0f, false)
-        private set
-
-    /** 最近一次的共振峰（归一化后）。 */
+    /** 最近一次的共振峰（原始频率）。 */
     @Volatile
     var formants: LpcAnalyzer.Formants = LpcAnalyzer.Formants(0f, 0f, 0f)
         private set
-
-    /** 最近的谱倾斜（dB/oct）。 */
-    @Volatile
-    var tilt: Float = 0f
-        private set
-
-    /**
-     * 是否正在录基准。
-     *
-     * 基准同时干两件事：
-     * 1. 用念 /a/ 时的实测 F1 反推声道长度（归一化的前提）
-     * 2. 作为音色轴的个人基准
-     */
-    @Volatile
-    var capturingBaseline: Boolean = false
-        private set
-
-    /** 基准录制的进度（0..1）。 */
-    @Volatile
-    var baselineProgress: Float = 0f
-        private set
-
-    private var baselineFrames = 0
 
     /**
      * 当前训练目标元音。
@@ -112,9 +87,6 @@ class VoiceQualityAnalyzer(
     var holdSeconds: Float = 0f
         private set
 
-    /** 基准录音里收集到的 F1（用来算中位数）。 */
-    private val baselineF1 = ArrayList<Float>(256)
-
     /** 有效帧计数（连续有效帧数，用于"信号稳定了"的判断）。 */
     @Volatile
     var validFrames: Int = 0
@@ -122,11 +94,6 @@ class VoiceQualityAnalyzer(
 
     init {
         lpc.prepare(windowSize)
-    }
-
-    companion object {
-        /** 基准录音的帧数（16 ms/帧 → 约 3 秒）。 */
-        const val BASELINE_FRAMES = 190
     }
 
     /**
@@ -161,34 +128,58 @@ class VoiceQualityAnalyzer(
     private fun processWindow(samples: FloatArray = buf, count: Int = windowSize) {
         val ok = lpc.analyze(samples, count)
         val raw = if (ok) lpc.extractFormants() else LpcAnalyzer.Formants(0f, 0f, 0f)
+
+        // ---- 诊断：必须在「判有效」**之前** ----
+        //
+        // 之前放在有效性判断之后，结果一帧都打不出来 ——
+        // F1 被判无效时函数已经 return 了，而那正是最需要看诊断的时候。
+        //
+        // 每 16 帧（约 256 ms）一行根列表 + 一行原始频谱。
+        if (Diagnostics.enabled && ok && ++diagFrame % 16 == 0) {
+            val d = lpc.diagnose()
+            Diagnostics.log(
+                "f=%d/%d roots=[%s]".format(
+                    raw.f1.toInt(), raw.f2.toInt(),
+                    d.roots.joinToString { "%.0f(bw%.0f)".format(it.hz, it.bandwidthHz) },
+                ),
+            )
+            val spec = lpc.spectrumDb(samples, count)
+            if (spec.isNotEmpty()) {
+                Diagnostics.log(
+                    "SPEC " + spec.joinToString(" ") { "%d:%.0f".format(it.first, it.second) },
+                )
+            }
+        }
+
         if (!ok || raw.f1 <= 0f || raw.f2 <= 0f) {
             validFrames = 0
-            // 信号断了就把平滑器也清掉 —— 留着过期的值显示出来更误导。
+            // 信号断了就把跟踪器和平滑器都清掉 ——
+            // 留着过期的值显示出来更误导。
+            tracker.reset()
             smoother.reset()
             formants = LpcAnalyzer.Formants(0f, 0f, 0f)
             recognized = null
             recognizedDistance = Float.MAX_VALUE
-            targetTracker.update(false)
+            // 只调一次。调两次的话每个无效帧 missFrames += 2，
+            // 宽限期（2 帧）等于直接失效 ——
+            // 攒了几秒的保持进度会被一个偶发坏帧清零。
             holdSeconds = targetTracker.update(false)
             return
         }
         validFrames++
 
-        // 稳态度用**原始**频率（归一化是线性缩放，不影响抖动量）
-        stabilityScore = stability.add(raw.f1, raw.f2)
-
-        // 归一化到标准声道长度，这样不同人的元音图能对齐
-        val normRaw = FormantNormalizer.normalize(raw)
-
         // 平滑 —— 显示、识别、距离都用平滑后的值。
         //
         // 原始帧的抖动有几十 Hz，直接显示的话数字疯狂跳，
         // 识别结果也会在两个元音之间来回闪。
-        val smooth = smoother.add(normRaw.f1, normRaw.f2)
-        formants = LpcAnalyzer.Formants(smooth.f1, smooth.f2, normRaw.f3)
-
-        val t = lpc.spectralTilt()
-        tilt = t
+        //
+        // 用的是**原始频率**，不做声道归一化 ——
+        // 归一换算是跨人对比的科研工具，对训练没帮助，
+        // 而且它会把「天生的声道差异」也消掉，
+        // 但那恰恰是「听起来像不像女性」的一部分。
+        val tracked = tracker.add(raw.f1, raw.f2)
+        val smooth = smoother.add(tracked.f1, tracked.f2)
+        formants = LpcAnalyzer.Formants(smooth.f1, smooth.f2, raw.f3)
 
         // 元音识别（用平滑后的值，避免结果闪变）
         val r = VowelRecognizer.recognize(smooth.f1, smooth.f2)
@@ -198,87 +189,31 @@ class VoiceQualityAnalyzer(
         // 训练进度：连续保持在目标区里多久了
         val tgt = target
         holdSeconds = if (tgt != null) {
-            targetTracker.update(VowelZone.isInZone(smooth.f1, smooth.f2, tgt))
+            // 和 UI 用**同一个判定函数**，连 F2 可信度豁免都一样。
+            val t = smooth.f1
+            val u = smooth.f2
+            val inZone = VowelZone.isInZone(
+                t,
+                u,
+                tgt,
+                f1Credible = true,
+                f2Credible = VowelZone.isF2Credible(u, tgt),
+            )
+            targetTracker.update(inZone)
         } else {
             targetTracker.update(false)
         }
 
-        // 音色轴
-        timbreReading = timbre.read(t, normRaw.f1)
-
-        // 基准录制
-        if (capturingBaseline) {
-            addBaselineSample(t, normRaw.f1)
-            baselineFrames++
-            baselineProgress = baselineFrames.toFloat() / BASELINE_FRAMES
-            if (baselineFrames >= BASELINE_FRAMES) {
-                finishBaseline()
-            }
-        }
     }
-
-    /**
-     * 开始录基准。
-     */
-    fun startBaseline() {
-        baselineFrames = 0
-        baselineProgress = 0f
-        baselineF1.clear()
-        capturingBaseline = true
-    }
-
-    /** 取消录制。 */
-    fun cancelBaseline() {
-        capturingBaseline = false
-        baselineProgress = 0f
-        baselineFrames = 0
-        baselineF1.clear()
-    }
-
-    /**
-     * 结束录制并应用。
-     *
-     * 声道长度用 F1 的**中位数**估计，不用平均值 ——
-     * 平均值会被起音、收音这几帧拉偏。
-     */
-    private fun finishBaseline() {
-        capturingBaseline = false
-        baselineProgress = 1f
-        if (baselineF1.size >= 10) {
-            val sorted = baselineF1.sorted()
-            val median = sorted[sorted.size / 2]
-            FormantNormalizer.calibrate(median)
-        }
-    }
-
-    /**
-     * 往基准里加一个样本。
-     *
-     * 用户录基准时调用。
-     */
-    fun addBaselineSample(tilt: Float, f1: Float) {
-        timbre.baseline.add(tilt, f1)
-        baselineF1.add(f1)
-    }
-
-    /**
-     * 用实测的 /a/ 的 F1 校准声道长度。
-     *
-     * @return 估计的声道长度（cm）
-     */
-    fun calibrateLength(measuredF1: Float): Float =
-        FormantNormalizer.calibrate(measuredF1)
 
     /** 清空所有状态。 */
     fun reset() {
         fill = 0
-        stability.reset()
-        stabilityScore = 0f
         validFrames = 0
         formants = LpcAnalyzer.Formants(0f, 0f, 0f)
         recognized = null
         recognizedDistance = Float.MAX_VALUE
-        timbreReading = TimbreAxis.Reading(0f, 0f, 0f, false)
+        tracker.reset()
         smoother.reset()
         targetTracker.reset()
         holdSeconds = 0f
@@ -291,8 +226,4 @@ class VoiceQualityAnalyzer(
         holdSeconds = 0f
     }
 
-    /** 清空基准（重新录）。 */
-    fun resetBaseline() {
-        timbre.baseline.reset()
-    }
 }

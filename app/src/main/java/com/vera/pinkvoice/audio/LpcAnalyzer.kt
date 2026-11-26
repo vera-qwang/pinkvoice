@@ -48,6 +48,19 @@ import kotlin.math.sqrt
  */
 private const val SUSPICIOUS_F2_HZ = 2000f
 
+/**
+ * 人声 F1 的上限。
+ *
+ * 成年人的 F1 最高约 1000 Hz（开口最大的 /a/）。
+ * 超过这个值说明**真的 F1 根丢了**，roots[0] 其实是 F2 ——
+ * 再往后排就全部错位一格。
+ *
+ * 这个守卫是实测驱动的：用户 Praat 测出 F1=471，
+ * App 却报 1411（=真实的 F2 1540），F2 报 2677（=真实的 F3 2885）。
+ * 错位的结果看着"有数字"，比报未知更危险。
+ */
+private const val MAX_PLAUSIBLE_F1_HZ = 1100f
+
 class LpcAnalyzer(
     private val sampleRate: Int = 16000,
     /**
@@ -72,7 +85,7 @@ class LpcAnalyzer(
      * - 0.97（+6 dB/oct）：太狠，/i/ 的 F1 直接消失
      * - 0.3–0.7：合成信号上误差都在 37–64 Hz 之间
      */
-    private val preEmphasis: Float = 0.7f,
+    private val preEmphasis: Float = 0.5f,
 ) {
 
     /** LPC 系数。a[0] 恒为 1，a[1..order] 是递推系数。 */
@@ -383,11 +396,91 @@ class LpcAnalyzer(
      * 走的是**求根**那条路，不是在包络上挑峰 —— 理由见
      * [extractFormantsByRoots]。
      */
+    /**
+     * 一帧的完整诊断（给「核对 Praat」用）。
+     *
+     * 为什么要这个：只有把**原始的根列表和包络**列出来，
+     * 才能判断「报出来的 F1 到底是真的 F1，还是 F2 顶替的」。
+     * 光看界面上那两个数字永远判断不了。
+     */
+    data class FrameDiag(
+        val roots: List<Formant>,
+        /** 包络在若干频点的 dB 值。 */
+        val envelope: List<Pair<Int, Float>>,
+        val output: Formants,
+    )
+
+    /** 导出当前帧的诊断信息。 */
+    fun diagnose(): FrameDiag {
+        val env = (100..3600 step 100).map { it to envelopeDb(it.toFloat()) }
+        return FrameDiag(extractFormantsByRoots(), env, extractFormants())
+    }
+
+    /**
+     * **原始信号**的频谱（dB，50 Hz 一步，0–4000 Hz）。
+     *
+     * 比 LPC 包络有用得多：包络已经被 LPC 参数「解释」过了，
+     * 从它反推不出「换成别的参数会怎样」。有了原始频谱，
+     * 就能在电脑上离线重跑整套 LPC —— 阶数、预加重、带宽全试一遍，
+     * 找出能在**真实声音**上保住 F1 的设置。
+     *
+     * 用 Goertzel 逐点算（81 个点 × 1024 样本），
+     * 只在诊断模式下、每 16 帧跑一次，开销可以忽略。
+     *
+     * @param samples 原始样本（16 kHz 域，未预加重）
+     */
+    fun spectrumDb(samples: FloatArray, count: Int): List<Pair<Int, Float>> {
+        if (count <= 0) return emptyList()
+        val win = FloatArray(count) { i ->
+            (0.54 - 0.46 * cos(2.0 * PI * i / (count - 1))).toFloat() * samples[i]
+        }
+        var peak = 1e-12f
+        val mags = ArrayList<Pair<Int, Float>>(81)
+        var f = 0
+        while (f <= 4000) {
+            val wq = 2.0 * PI * f / sampleRate
+            val c = 2.0 * cos(wq)
+            var s1 = 0.0
+            var s2 = 0.0
+            for (x in win) {
+                val s0 = x + c * s1 - s2
+                s2 = s1
+                s1 = s0
+            }
+            val re = s1 - s2 * cos(wq)
+            val im = s2 * sin(wq)
+            val m = kotlin.math.sqrt(re * re + im * im).toFloat()
+            if (m > peak) peak = m
+            mags += f to m
+            f += 50
+        }
+        return mags.map { (hz, m) ->
+            hz to (20.0 * log10((m / peak + 1e-9).toDouble())).toFloat()
+        }
+    }
+
     fun extractFormants(): Formants {
         val roots = extractFormantsByRoots()
         if (roots.isEmpty()) return Formants(0f, 0f, 0f)
 
+        // ---------------- F1 必须落在人声范围内 ----------------
+        //
+        // **真 F1 的根丢了呢？**
+        //
+        // 那就全部错位一格：roots[0] 其实是 F2、roots[1] 是 F3，
+        // 界面上却报成「F1=1411 Hz」——
+        // 实测就是这个现象（Praat 的 F1=471、F2=1540、F3=2885，
+        // App 报 1411 / 2677，正好是 F2 / F3 往后挪了一格）。
+        //
+        // 错位比"没有读数"糟得多：用户会照着一个错的值练。
+        // 所以这里宁可报未知。
+        //
+        // 上限 1100 Hz：成年人的 F1 最高约 1000（开口最大的 /a/）。
+        // 真 F2 最低的 /u/ 也有 800 多，而 F2 一旦被当成 F1，
+        // 报出来的值明显超过 1100。
         val f1 = roots[0].hz
+        if (f1 > MAX_PLAUSIBLE_F1_HZ) return Formants(0f, 0f, 0f)
+
         var f2 = roots.getOrNull(1)?.hz ?: 0f
         var f3 = roots.getOrNull(2)?.hz ?: 0f
 
@@ -410,7 +503,7 @@ class LpcAnalyzer(
         // 注意 /i/（F1=270, F2=2290）**不能**被误判：
         // 它的 470–2000 Hz 之间本来就没有共振峰，
         // 包络上找不到显著脊，所以 F2 保持 2290。
-        if (f2 > SUSPICIOUS_F2_HZ && f1 > 0f) {
+        if (f2 > SUSPICIOUS_F2_HZ) {
             val ridge = envelopeLocalMaxBetween(f1 + 250f, f2)
             if (ridge > 0f && envelopeDb(ridge) > envelopeDb(f2) + 1f) {
                 f2 = ridge
@@ -515,16 +608,35 @@ class LpcAnalyzer(
         /**
          * 带宽上限。
          *
-         * 520 Hz —— 比教科书上的 400 宽，因为真信号里的共振峰会被
-         * 手机麦、蓝牙链路和房间混响**抹宽**。实测 /a/ 的 F2 根
-         * 带宽 484–510 Hz，卡在 400 的话整个共振峰被丢掉。
+         * 700 Hz —— 这是用**真实录音对照 Praat** 标定出来的，
+         * 不是拍脑袋定的。
          *
-         * 但也不能太宽：放到 700 的话，伪根（阶数比实际共振峰多时
-         * 极点拟合噪声产生的）也会被放进来，把 F2 顶掉
-         * （实测 /i/ 的 F2 被一个 1280 Hz 的伪根占了位置）。
-         * 520 是两头都不越界的位置。
+         * ## 为什么必须这么宽
+         *
+         * F1 的极点带宽天生就大。真信号里 F1 的能量弱、
+         * 又叠在声门源的强低频倾斜上，LPC 只能用一个很宽的极点去拟合。
+         *
+         * 实测（用户真实录音，Praat 真值 F1=413）：
+         * F1 的根找到了，在 436 Hz，**带宽 812 Hz**。
+         * 带宽上限卡在 520 的话它被当成"噪声峰"丢掉 ——
+         * 然后 roots[0] 变成真正的 F2，后面全部错位一格：
+         * 界面报 F1=1411（其实是 F2）、F2=2677（其实是 F3）。
+         *
+         * 这就是「F1/F2 完全错误」的根因。
+         *
+         * ## 为什么不再是 400
+         *
+         * 教科书上的 400 适用于干净录音棚素材。
+         * 手机麦 + 房间混响会把共振峰抹宽，400 一律丢光。
+         *
+         * ## 标定数据
+         *
+         * 真实录音（Praat 基准）：bw 520 → 误差 2156 Hz；
+         * bw 700 → 误差 43 Hz；bw 900/1100 与 700 持平。
+         * 合成元音（6 个）：bw 700 和 900 结果完全一致。
+         * 取 700 是因为它在真实录音上略好，且更窄、更不容易放进伪根。
          */
-        maxBandwidthHz: Float = 520f,
+        maxBandwidthHz: Float = 700f,
     ): List<Formant> {
         if (!valid) return emptyList()
 

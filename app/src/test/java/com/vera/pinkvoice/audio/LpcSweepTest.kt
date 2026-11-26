@@ -92,4 +92,96 @@ class LpcSweepTest {
             }
         }
     }
+
+
+    /**
+     * 诊断：低 F1 的元音，预加重取多少才能保住 F1 的根。
+     *
+     * 背景：真机实测 F1=471 时 App 报 1411 —— 真的 F1 根丢了。
+     * 怀疑预加重 0.7 在 471 Hz 处衰减约 9.5 dB，
+     * 把 F1 极点拟合成宽带（>520 Hz 就被带宽上限过滤掉）。
+     */
+    @Test
+    fun diagLowF1PreEmphasis() {
+        val sr = 16000
+        val formants = doubleArrayOf(471.0, 1540.0, 2885.0)
+        for (pre in floatArrayOf(0.0f, 0.3f, 0.5f, 0.7f, 0.9f)) {
+            for (f0 in doubleArrayOf(120.0, 200.0)) {
+                val sig = VowelSynth.synth(f0, formants)
+                val lpc = LpcAnalyzer(sr, preEmphasis = pre)
+                lpc.prepare(1024)
+                val start = (sig.size - 1024) / 2
+                lpc.analyze(sig.copyOfRange(start, start + 1024), 1024)
+                val roots = lpc.extractFormantsByRoots()
+                val got = lpc.extractFormants()
+                println(
+                    "pre=%.1f f0=%.0f  根=[%s]  →  F1=%.0f F2=%.0f".format(
+                        pre, f0,
+                        roots.joinToString { "%.0f(bw%.0f)".format(it.hz, it.bandwidthHz) },
+                        got.f1, got.f2,
+                    ),
+                )
+            }
+        }
+    }
+
+
+
+    /**
+     * 诊断：高基频（女声）下，窗口长度对精度的影响。
+     *
+     * 现象：f0=200 时 F2 报 1131（真值 1540）。
+     * 怀疑是谐波间隔变大（200 Hz）、共振峰落在两个谐波之间，
+     * 64 ms 窗（1024 点 @16k）的 LPC 拟合不准。
+     *
+     * 女声 f0 通常 180–250 Hz，所以这个问题直接决定
+     * 「对女声准不准」。
+     */
+    @Test
+    fun diagWindowVsF0() {
+        val sr = 16000
+        val formants = doubleArrayOf(471.0, 1540.0, 2885.0)
+        for (win in intArrayOf(1024, 2048, 4096)) {
+            for (f0 in doubleArrayOf(120.0, 180.0, 200.0, 220.0, 250.0)) {
+                val sig = VowelSynth.synth(f0, formants, seconds = 0.5)
+                val lpc = LpcAnalyzer(sr)
+                lpc.prepare(win)
+                if (sig.size < win) continue
+                val start = (sig.size - win) / 2
+                lpc.analyze(sig.copyOfRange(start, start + win), win)
+                val got = lpc.extractFormants()
+                println(
+                    "窗=%d (%.0fms) f0=%.0f  →  F1=%.0f F2=%.0f  (真值 471/1540)".format(
+                        win, win * 1000.0 / sr, f0, got.f1, got.f2,
+                    ),
+                )
+            }
+        }
+        // 再验一组真实的元音
+        println("---- 六个标准元音，f0=200 ----")
+        val vowels = mapOf(
+            "a" to doubleArrayOf(730.0, 1090.0, 2440.0),
+            "i" to doubleArrayOf(270.0, 2290.0, 3010.0),
+            "u" to doubleArrayOf(300.0, 870.0, 2240.0),
+            "ae" to doubleArrayOf(660.0, 1720.0, 2410.0),
+            "eh" to doubleArrayOf(530.0, 1840.0, 2480.0),
+            "ao" to doubleArrayOf(570.0, 840.0, 2410.0),
+        )
+        for (win in intArrayOf(1024, 2048)) {
+            for ((name, f) in vowels) {
+                val sig = VowelSynth.synth(200.0, f, seconds = 0.5)
+                val lpc = LpcAnalyzer(sr)
+                lpc.prepare(win)
+                val start = (sig.size - win) / 2
+                lpc.analyze(sig.copyOfRange(start, start + win), win)
+                val got = lpc.extractFormants()
+                println(
+                    "窗=%d /%s/  →  F1=%.0f F2=%.0f  (真值 %.0f/%.0f)".format(
+                        win, name, got.f1, got.f2, f[0], f[1],
+                    ),
+                )
+            }
+        }
+    }
+
 }

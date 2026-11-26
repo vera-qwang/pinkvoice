@@ -109,24 +109,26 @@ class VowelTrainingTest {
     }
 
     @Test
-    fun everyVowelHasTheSameSizedTargetArea() {
-        // 目标区域用**绝对**半径，所以所有元音的区一样大。
+    fun everyVowelHasTheSameDifficulty() {
+        // 目标区域用**音分**容差，所以每个元音一样难。
         //
-        // 用百分比的话：/衣/ 的 F1 只有 297 Hz，12% 才 ±36 Hz
-        // （比音分还紧，根本进不去）；/乌/ 的 F2 才 1044 Hz，
-        // 12% 是 ±125 Hz（松得没意义）。
+        // 用 Hz 的话天差地别：/衣/ 的 F1=297 只能容忍 ±36 Hz，
+        // 而 /啊/ 的 F2=1308 能容忍 ±158 Hz —— 差四倍多。
+        // 用音分的话每个都是 ±12%，用户练哪个都是同样的挑战。
         for (v in VowelTarget.entries) {
-            assertEquals(
-                "${v.label} 的 F1 区域半径应一致",
-                FeminineTarget.RADIUS_F1_HZ,
-                FeminineTarget.radiusF1(v),
-                0.01f,
+            // ±120 音分 = ±7.18%（半宽），全宽 14.4%
+            //
+            // 注意别写成 12%：120/1200 个八度 = 2^(0.1) = 1.0718，
+            // 也就是 ±7.18%，不是 ±12%。
+            val pctF1 = FeminineTarget.radiusF1(v) / FeminineTarget.centerF1(v) * 100f
+            val pctF2 = FeminineTarget.radiusF2(v) / FeminineTarget.centerF2(v) * 100f
+            assertTrue(
+                "${v.label} 的 F1 容差半宽应约 7.18%（实际 $pctF1%）",
+                kotlin.math.abs(pctF1 - 7.18f) < 0.2f,
             )
-            assertEquals(
-                "${v.label} 的 F2 区域半径应一致",
-                FeminineTarget.RADIUS_F2_HZ,
-                FeminineTarget.radiusF2(v),
-                0.01f,
+            assertTrue(
+                "${v.label} 的 F2 容差半宽应约 7.18%（实际 $pctF2%）",
+                kotlin.math.abs(pctF2 - 7.18f) < 0.2f,
             )
         }
     }
@@ -143,15 +145,16 @@ class VowelTrainingTest {
                 "${v.label} 的目标 F2 应该更高（往前）",
                 FeminineTarget.centerF2(v) > v.f2,
             )
+            // Fant (1966) / Hillenbrand & Clark (2009)：男→女 F1 +18%、F2 +17%
             assertEquals(
                 "${v.label} 的 F1 系数",
-                1.10f,
+                1.18f,
                 FeminineTarget.centerF1(v) / v.f1,
                 0.001f,
             )
             assertEquals(
                 "${v.label} 的 F2 系数",
-                1.20f,
+                1.17f,
                 FeminineTarget.centerF2(v) / v.f2,
                 0.001f,
             )
@@ -236,7 +239,6 @@ class VowelTrainingTest {
      */
     @Test
     fun recognitionDoesNotFlickerOnSteadyVowel() {
-        FormantNormalizer.reset()
         val a = VowelTarget.A
 
         // 平滑之前：原始值带 ±60 Hz 抖动，识别结果会闪
@@ -293,6 +295,46 @@ class VowelTrainingTest {
             "/i/ 的 F2 不该被判为不可信",
             VowelZone.isF2Credible(FeminineTarget.centerF2(i), i),
         )
+    }
+
+
+
+    /**
+     * 可信度要同时罩住「出发位置」和「目标位置」。
+     *
+     * 之前拿女性化目标当唯一参照 —— 而用户现在就在参考位置，
+     * /啊/ 的真值 F2=1090、目标 1308，差 316 音分，
+     * 于是**一个完全正确的读数被判成「读数不稳」**。
+     */
+    @Test
+    fun credibleRangeCoversBothReferenceAndTarget() {
+        for (v in VowelTarget.entries) {
+            // 参考位置（用户出发的地方）必须可信
+            assertTrue(
+                "${v.label} 在参考位置的 F2（${v.f2.toInt()}）不该被判为不可信",
+                VowelZone.isF2Credible(v.f2, v),
+            )
+            // 目标位置（用户要到达的地方）也必须可信
+            assertTrue(
+                "${v.label} 在目标位置的 F2 不该被判为不可信",
+                VowelZone.isF2Credible(FeminineTarget.centerF2(v), v),
+            )
+            // 两者中间当然也要可信
+            val mid = (v.f2 + FeminineTarget.centerF2(v)) / 2f
+            assertTrue(
+                "${v.label} 在中间位置的 F2 不该被判为不可信",
+                VowelZone.isF2Credible(mid, v),
+            )
+            // 离目标区域很远的值必须判为不可信。
+            //
+            // 注意不能用「F3 的位置」来判：/衣/ 的目标 F2 是 2748，
+            // 它的 F3 也在 3010 —— 两者只差 100 音分，
+            // 频率上根本分不开（元音图的天花板，见 VowelRecognizer 的说明）。
+            assertFalse(
+                "${v.label} 在 4000 Hz 该判为不可信",
+                VowelZone.isF2Credible(4000f, v),
+            )
+        }
     }
 
 }

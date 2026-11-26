@@ -127,10 +127,28 @@ fun VowelChart(
                 val isTarget = v == target
                 val isRecognized = v == recognized
                 val c = Offset(xOf(FeminineTarget.centerF2(v)), yOf(FeminineTarget.centerF1(v)))
+                // 半径用**音分**换算成像素，而不是直接的 Hz。
+                //
+                // 两个轴的跨度差 3 倍多（F1 800 Hz vs F2 2600 Hz），
+                // 直接用 Hz 换算的话，同样 ±80 Hz 在 F1 方向占 1/10、
+                // 在 F2 方向只占 1/32 —— 画出来是竖条，
+                // 看着别扭，用户也判断不出「区有多大」。
+                // **半径必须由 Hz 换算成像素** —— 和判定用的是同一个半径。
+                //
+                // 之前这里把「音分」直接当成了「轴跨度的百分比」：
+                //   ry = 120 / 1000 * h   → 恒定 96 Hz
+                //   rx = 120 / 1200 * w   → 恒定 260 Hz
+                // 而判定用的是 FeminineTarget.radiusF1/F2（中心频率的 ±7.18%）。
+                // 结果图上画的圈比判定用的大 1.4~4.2 倍，
+                // 用户把点移进圈里，判定却说没到位。
+                //
+                // 现在两边都来自同一对 Hz 半径，图上的圈就是判定范围本身。
+                // 形状是椭圆 —— 元音图两个轴的跨度差 3 倍多，
+                // 用 Hz 半径画出来必然不是一个正圆，这是坐标轴的固有结果。
                 val ry = (FeminineTarget.radiusF1(v) / (1000f - 200f) * h)
-                    .coerceAtLeast(5.dp.toPx())
+                    .coerceAtLeast(4.dp.toPx())
                 val rx = (FeminineTarget.radiusF2(v) / (3200f - 600f) * w)
-                    .coerceAtLeast(5.dp.toPx())
+                    .coerceAtLeast(4.dp.toPx())
                 val tint = when {
                     isTarget -> palette.trace
                     isRecognized -> palette.primaryInk

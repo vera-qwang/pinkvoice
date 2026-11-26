@@ -78,14 +78,14 @@ private fun DeviationChip(
         Text(
             text = when {
                 !active -> "—"
-                !credible -> "读数不稳"
-                inTol -> "✓ 达标"
+                !credible -> "${value.toInt()} Hz · 读数不稳"
+                inTol -> "${value.toInt()} Hz ✓"
                 // 差太远时别显示一长串数字 —— 截断掉，
                 // 用户关心的是方向，不是精确数值。
-                delta > 999f -> "偏高 >999"
-                delta < -999f -> "偏低 >999"
-                delta > 0 -> "偏高 ${delta.toInt()}"
-                else -> "偏低 ${(-delta).toInt()}"
+                delta > 999f -> "${value.toInt()} Hz 偏高 >999"
+                delta < -999f -> "${value.toInt()} Hz 偏低 >999"
+                delta > 0 -> "${value.toInt()} Hz 偏高 ${delta.toInt()}"
+                else -> "${value.toInt()} Hz 偏低 ${(-delta).toInt()}"
             },
             fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold,
@@ -139,14 +139,17 @@ fun FormantContent(
 
     // 是否在目标区里。
     //
-    // F2 读数不可信时**只用 F1 判定** —— F1 在低频区，
-    // 反而是信号差的时候最靠得住的那个。
-    val inZone = quality.valid &&
-        kotlin.math.abs(quality.formants.f1 - FeminineTarget.centerF1(target)) <=
-            FeminineTarget.radiusF1(target) &&
-        (!f2Credible ||
-            kotlin.math.abs(quality.formants.f2 - FeminineTarget.centerF2(target)) <=
-                FeminineTarget.radiusF2(target))
+    // **必须调同一个函数** —— 之前 UI 和保持计时各判各的：
+    // UI 允许「F2 不可信就只看 F1」，计时要求两个都在区。
+    // 结果 F2 被判不稳时，点画成绿色「到位了」，
+    // 进度条却永远 0.0 秒，自相矛盾。
+    val inZone = quality.valid && VowelZone.isInZone(
+        quality.formants.f1,
+        quality.formants.f2,
+        target,
+        f1Credible = true,
+        f2Credible = f2Credible,
+    )
 
 
     // 只在训练页打开时才跑 LPC（监测页不需要）
@@ -388,88 +391,5 @@ fun FormantContent(
             }
         }
 
-        // ---------------- 稳态度 + 音色轴 ----------------
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(22.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            border = androidx.compose.foundation.BorderStroke(1.dp, palette.cardBorder),
-        ) {
-            Column(
-                Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                AxisGauge(
-                    value = quality.stability * 2f - 1f,
-                    label = "稳态度",
-                    valueText = "${(quality.stability * 100).toInt()}%",
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(38.dp),
-                    leftLabel = "抖",
-                    rightLabel = "稳",
-                )
-                AxisGauge(
-                    value = quality.timbre.position,
-                    label = "音色",
-                    valueText = quality.timbre.label,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(38.dp),
-                    leftLabel = "薄/虚",
-                    rightLabel = "厚/实",
-                )
-                // 基准按钮
-                Button(
-                    onClick = {
-                        if (quality.capturingBaseline) {
-                            engine.cancelBaselineCapture()
-                        } else {
-                            engine.startBaselineCapture()
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (quality.capturingBaseline) {
-                            MaterialTheme.colorScheme.surfaceVariant
-                        } else {
-                            MaterialTheme.colorScheme.primary
-                        },
-                        contentColor = if (quality.capturingBaseline) {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        } else {
-                            MaterialTheme.colorScheme.onPrimary
-                        },
-                    ),
-                ) {
-                    Text(
-                        text = when {
-                            quality.capturingBaseline -> "取消（${(quality.baselineProgress * 100).toInt()}%）"
-                            quality.timbre.hasBaseline -> "重录基准"
-                            else -> "录基准：念 /a/ 3 秒"
-                        },
-                        fontSize = 13.sp,
-                    )
-                }
-                if (quality.capturingBaseline) {
-                    LinearProgressIndicator(
-                        progress = { quality.baselineProgress },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Text(
-                        text = "念一个「啊」，拉长、保持不变",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else if (!quality.timbre.hasBaseline) {
-                    Text(
-                        text = "厚薄没有绝对标准，得跟自己的声音比。",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
     }
 }
