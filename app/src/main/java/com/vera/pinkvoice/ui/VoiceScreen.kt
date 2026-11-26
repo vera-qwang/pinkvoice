@@ -650,21 +650,41 @@ internal fun SettingsSheet(
     }
 }
 
-/** 读数卡里的一格统计（标签 + 数值）。 */
+/**
+ * 读数卡里的一格统计（标签 + 数值）。
+ *
+ * [suffix] 是紧跟在数值右边的小字（如 "220 Hz"），
+ * 用来把"音名"和"精确频率"并排放在同一格里。
+ */
 @Composable
-private fun StatChip(label: String, value: String) {
+private fun StatChip(
+    label: String,
+    value: String,
+    suffix: String? = null,
+    valueColor: Color = MaterialTheme.colorScheme.onSurface,
+) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
             text = label,
             fontSize = 10.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Text(
-            text = value,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = value,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                color = valueColor,
+            )
+            if (suffix != null) {
+                Spacer(Modifier.width(3.dp))
+                Text(
+                    text = suffix,
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 
