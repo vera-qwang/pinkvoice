@@ -26,6 +26,8 @@ data class QualityState(
     val baselineProgress: Float = 0f,
     /** 是否正在录基准。 */
     val capturingBaseline: Boolean = false,
+    /** 连续保持在目标区里的秒数。 */
+    val holdSeconds: Float = 0f,
 ) {
     companion object {
         val EMPTY = QualityState()

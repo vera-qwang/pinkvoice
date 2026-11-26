@@ -4,8 +4,12 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.exp
+import kotlin.math.log10
+import kotlin.math.pow
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
  * LPC 分析器的正确性验证。
@@ -24,40 +28,16 @@ class LpcAnalyzerTest {
     /**
      * 合成一个元音。
      *
-     * @param f0 基频
-     * @param formants 共振峰 [F1, F2, F3]
-     * @param bandwidths 对应带宽
+     * 用共享的 [VowelSynth] —— 它保证频谱比例接近真实人声。
+     * 这点很重要：不真实的信号会让验证结论跑偏
+     * （见 VowelSynth 里的详细说明）。
      */
     private fun synthVowel(
         f0: Double,
         formants: DoubleArray,
         bandwidths: DoubleArray = doubleArrayOf(60.0, 90.0, 120.0),
         seconds: Double = 0.6,
-    ): FloatArray {
-        val n = (sampleRate * seconds).toInt()
-        val src = glottalFlow(f0, n)
-        // 真正辐射出去的是声门流的**导数**（唇端辐射 +6 dB/oct），
-        // 这一步不做的话频谱形状不对。
-        val radiated = DoubleArray(n)
-        for (i in 1 until n) radiated[i] = src[i] - src[i - 1]
-        // 级联共振器
-        //
-        // 注意用的是 **radiated**（声门流的导数），不是 src。
-        //
-        // 差一个字后果很严重：声门流的低频能量极强（频谱 -12 dB/oct），
-        // 拿它去级联的话 r[1]/r[0] 会接近 1，Levinson 的反射系数直接爆掉，
-        // 递推发散、系数变成回文结构 —— 看起来像 LPC 写错了，其实是信号不对。
-        var y = radiated
-        for (k in formants.indices) {
-            y = resonator(y, formants[k], bandwidths[k])
-        }
-        // 归一化
-        var peak = 1e-9
-        for (v in y) peak = maxOf(peak, kotlin.math.abs(v))
-        val out = FloatArray(n)
-        for (i in 0 until n) out[i] = (y[i] / peak * 0.5).toFloat()
-        return out
-    }
+    ): FloatArray = VowelSynth.synth(f0, formants, bandwidths, seconds)
 
     /**
      * Rosenberg 声门流脉冲。

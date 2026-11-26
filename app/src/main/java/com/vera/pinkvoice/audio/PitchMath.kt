@@ -25,6 +25,15 @@ object PitchMath {
     }
 
     /**
+     * Hz -> 音名，取最近的半音，如 164.81 -> "E3"。
+     *
+     * 音名是从频率直接换算的，不做平均：
+     * 平均音高换出音名时必须和它显示的 Hz 对得上，
+     * 否则"平均音高 E3"和"平均音高 220 Hz"会指到两个不同的音。
+     */
+    fun hzToNoteName(hz: Double): String = midiToName(hzToMidiInt(hz))
+
+    /**
      * 相对最近半音的偏移，单位 cent。
      * 正值 = 偏高，负值 = 偏低。
      */

@@ -276,9 +276,17 @@ fun MonitorContent(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    // 平均音高：音名（E3）+ 频率（220 Hz）。
+                    // 音名由同一个 avgHz 换算，和右边那个频率、以及曲线上那条
+                    // 虚线指的是同一个音，不会出现"读数说 E3、曲线在别处"的情况。
+                    // 音名按所在音域着色——和曲线上那条平均线同色，
+                    // 一眼能看出"我现在整体唱在女声区还是男声区"。
                     StatChip(
                         label = "平均音高",
-                        value = readout.avgHz?.let { "${it.roundToInt()} Hz" } ?: "—",
+                        value = readout.avgHz?.let { PitchMath.hzToNoteName(it.toDouble()) } ?: "—",
+                        suffix = readout.avgHz?.let { "${it.roundToInt()} Hz" },
+                        valueColor = readout.avgHz?.let { bandColorOf(it, palette) }
+                            ?: MaterialTheme.colorScheme.onSurface,
                     )
                     StatChip(
                         label = "平均响度",

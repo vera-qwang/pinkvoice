@@ -1,7 +1,5 @@
 package com.vera.pinkvoice.audio
 
-import android.util.Log
-
 /**
  * 嗓音质量分析：共振峰、元音识别、稳态度、音色轴。
  *
@@ -28,6 +26,18 @@ class VoiceQualityAnalyzer(
 ) {
     private val lpc = LpcAnalyzer(sampleRate = sampleRate)
     private val stability = StabilityTracker()
+
+    /**
+     * F1/F2 的中位数平滑。
+     *
+     * 显示、识别、距离都用**平滑后**的值 ——
+     * 原始帧的抖动有几十 Hz，直接显示的话数字会疯狂跳，
+     * 识别结果也会在两个元音之间来回闪。
+     */
+    private val smoother = FormantSmoother()
+
+    /** 训练进度：连续保持在目标区里多久了。 */
+    private val targetTracker = TargetTracker()
 
     /**
      * 滑动缓冲。
@@ -89,17 +99,18 @@ class VoiceQualityAnalyzer(
 
     private var baselineFrames = 0
 
-    private var diagCount = 0
+    /**
+     * 当前训练目标元音。
+     *
+     * 设为 null 就停止计时。UI 换目标时调 [VoiceEngine.setVowelTarget]。
+     */
+    @Volatile
+    var target: VowelTarget? = null
 
-    /** 诊断用的几组参数对比。 */
-    private val diagAnalyzers = listOf(
-        LpcAnalyzer(sampleRate, 12, 0.3f),
-        LpcAnalyzer(sampleRate, 16, 0.3f),
-        LpcAnalyzer(sampleRate, 20, 0.3f),
-        LpcAnalyzer(sampleRate, 12, 0.7f),
-        LpcAnalyzer(sampleRate, 16, 0.7f),
-        LpcAnalyzer(sampleRate, 16, 0.97f),
-    )
+    /** 连续保持在目标区的秒数。 */
+    @Volatile
+    var holdSeconds: Float = 0f
+        private set
 
     /** 基准录音里收集到的 F1（用来算中位数）。 */
     private val baselineF1 = ArrayList<Float>(256)
@@ -111,7 +122,6 @@ class VoiceQualityAnalyzer(
 
     init {
         lpc.prepare(windowSize)
-        diagAnalyzers.forEach { it.prepare(windowSize) }
     }
 
     companion object {
@@ -151,58 +161,54 @@ class VoiceQualityAnalyzer(
     private fun processWindow(samples: FloatArray = buf, count: Int = windowSize) {
         val ok = lpc.analyze(samples, count)
         val raw = if (ok) lpc.extractFormants() else LpcAnalyzer.Formants(0f, 0f, 0f)
-        if (++diagCount % 25 == 0) {
-            val roots = lpc.extractFormantsByRoots()
-            val peaks = lpc.findPeaks(150f, 4000f)
-            Log.d(
-                "VoiceQuality",
-                "ok=$ok f=${raw.f1.toInt()}/${raw.f2.toInt()} roots=" +
-                    roots.joinToString { "%.0f(%.0f)".format(it.hz, it.bandwidthHz) } +
-                    " peaks=" + peaks.joinToString { "%.0f".format(it) } +
-                    " env=" + (700..2600 step 100).joinToString {
-                        "${it}:${"%.0f".format(lpc.envelopeDb(it.toFloat()))}"
-                    } +
-                    " raw=" + lpc.debugAllRoots().joinToString {
-                        "%.0f(%.0f,%.2f)".format(it.first, it.second, it.third)
-                    } +
-                    diagAnalyzers.joinToString { da ->
-                        if (!da.analyze(samples, count)) return@joinToString "X"
-                        val pk = da.findPeaks(150f, 4000f)
-                        "[" + pk.joinToString { "%.0f".format(it) } + "]"
-                    },
-            )
-        }
-        if (!ok) {
+        if (!ok || raw.f1 <= 0f || raw.f2 <= 0f) {
             validFrames = 0
-            return
-        }
-        if (raw.f1 <= 0f || raw.f2 <= 0f) {
-            validFrames = 0
+            // 信号断了就把平滑器也清掉 —— 留着过期的值显示出来更误导。
+            smoother.reset()
+            formants = LpcAnalyzer.Formants(0f, 0f, 0f)
+            recognized = null
+            recognizedDistance = Float.MAX_VALUE
+            targetTracker.update(false)
+            holdSeconds = targetTracker.update(false)
             return
         }
         validFrames++
 
+        // 稳态度用**原始**频率（归一化是线性缩放，不影响抖动量）
+        stabilityScore = stability.add(raw.f1, raw.f2)
+
         // 归一化到标准声道长度，这样不同人的元音图能对齐
-        val norm = FormantNormalizer.normalize(raw)
-        formants = norm
+        val normRaw = FormantNormalizer.normalize(raw)
+
+        // 平滑 —— 显示、识别、距离都用平滑后的值。
+        //
+        // 原始帧的抖动有几十 Hz，直接显示的话数字疯狂跳，
+        // 识别结果也会在两个元音之间来回闪。
+        val smooth = smoother.add(normRaw.f1, normRaw.f2)
+        formants = LpcAnalyzer.Formants(smooth.f1, smooth.f2, normRaw.f3)
 
         val t = lpc.spectralTilt()
         tilt = t
 
-        // 稳态度用**原始**频率（归一化是线性缩放，不影响抖动量）
-        stabilityScore = stability.add(raw.f1, raw.f2)
-
-        // 元音识别
-        val r = VowelRecognizer.recognize(norm.f1, norm.f2)
+        // 元音识别（用平滑后的值，避免结果闪变）
+        val r = VowelRecognizer.recognize(smooth.f1, smooth.f2)
         recognized = r.vowel
         recognizedDistance = r.distance
 
+        // 训练进度：连续保持在目标区里多久了
+        val tgt = target
+        holdSeconds = if (tgt != null) {
+            targetTracker.update(VowelZone.isInZone(smooth.f1, smooth.f2, tgt))
+        } else {
+            targetTracker.update(false)
+        }
+
         // 音色轴
-        timbreReading = timbre.read(t, norm.f1)
+        timbreReading = timbre.read(t, normRaw.f1)
 
         // 基准录制
         if (capturingBaseline) {
-            addBaselineSample(t, norm.f1)
+            addBaselineSample(t, normRaw.f1)
             baselineFrames++
             baselineProgress = baselineFrames.toFloat() / BASELINE_FRAMES
             if (baselineFrames >= BASELINE_FRAMES) {
@@ -273,6 +279,16 @@ class VoiceQualityAnalyzer(
         recognized = null
         recognizedDistance = Float.MAX_VALUE
         timbreReading = TimbreAxis.Reading(0f, 0f, 0f, false)
+        smoother.reset()
+        targetTracker.reset()
+        holdSeconds = 0f
+    }
+
+    /** 换训练目标：清掉之前的保持进度。 */
+    fun selectTarget(v: VowelTarget?) {
+        target = v
+        targetTracker.reset()
+        holdSeconds = 0f
     }
 
     /** 清空基准（重新录）。 */

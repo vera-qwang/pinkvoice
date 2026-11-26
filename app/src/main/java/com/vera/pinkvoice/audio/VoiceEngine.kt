@@ -816,7 +816,19 @@ class VoiceEngine(
             valid = q.validFrames > 4,
             baselineProgress = q.baselineProgress,
             capturingBaseline = q.capturingBaseline,
+            holdSeconds = q.holdSeconds,
         )
+    }
+
+    /**
+     * 设置训练目标元音。
+     *
+     * 目标决定了两件事：
+     * - 界面上"离目标多远"的对比
+     * - "连续保持在目标区里多久了"的计时
+     */
+    fun setVowelTarget(v: VowelTarget?) {
+        quality?.selectTarget(v)
     }
 
     private var lastLogNs = 0L

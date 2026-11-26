@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vera.pinkvoice.audio.VowelTarget
+import com.vera.pinkvoice.audio.VowelZone
 import kotlin.math.roundToInt
 
 /**
@@ -52,8 +53,10 @@ fun VowelChart(
     trail: List<Pair<Float, Float>>,
     /** 识别出的元音，用来高亮。 */
     recognized: VowelTarget?,
-    /** 当前目标元音，用描边框标出来。 */
+    /** 当前目标元音，画成靶心。 */
     target: VowelTarget?,
+    /** 当前是否在目标区内（靶心高亮）。 */
+    inZone: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalVoicePalette.current
@@ -107,10 +110,34 @@ fun VowelChart(
                 style = Stroke(1.dp.toPx()),
             )
 
-            // 目标元音的圈
+            // ---------------- 目标：靶心 ----------------
+            //
+            // 画的是**容差区**（一个正圆），不是目标位置本身 ——
+            // 用户要做的不是「对准那个点」，是「把点保持在圈里」。
+            //
+            // 容差用音分（±120 cent ≈ ±7%），所以两个方向上
+            // 占的比例一样，是个正圆而不是一条窄缝。
             target?.let {
                 val c = Offset(xOf(it.f2), yOf(it.f1))
-                drawCircle(palette.trace.copy(alpha = 0.5f), 13.dp.toPx(), c, style = Stroke(2.dp.toPx()))
+                val rF1 = VowelZone.radiusHz(it.f1)
+                val rF2 = VowelZone.radiusHz(it.f2)
+                val ry = (rF1 / (1000f - 200f) * h).coerceAtLeast(6.dp.toPx())
+                val rx = (rF2 / (3000f - 600f) * w).coerceAtLeast(6.dp.toPx())
+                val zoneColor = if (inZone) palette.inTune else palette.trace
+                // 容差区：淡填充 + 描边
+                drawOval(
+                    color = zoneColor.copy(alpha = if (inZone) 0.22f else 0.10f),
+                    topLeft = Offset(c.x - rx, c.y - ry),
+                    size = Size(rx * 2, ry * 2),
+                )
+                drawOval(
+                    color = zoneColor.copy(alpha = if (inZone) 0.95f else 0.6f),
+                    topLeft = Offset(c.x - rx, c.y - ry),
+                    size = Size(rx * 2, ry * 2),
+                    style = Stroke(2.dp.toPx()),
+                )
+                // 中心：目标位置
+                drawCircle(zoneColor, 3.dp.toPx(), c)
             }
 
             // 目标元音的灰色小点（所有可选元音）
@@ -166,10 +193,13 @@ fun VowelChart(
             }
 
             // 当前位置
+            //
+            // 在目标区里就变成绿色 —— 一眼看出「到位了」。
             if (f1 > 0f && f2 > 0f) {
                 val c = Offset(xOf(f2), yOf(f1))
-                drawCircle(palette.primaryInk.copy(alpha = 0.18f), 11.dp.toPx(), c)
-                drawCircle(palette.primaryInk, 5.dp.toPx(), c)
+                val dot = if (inZone) palette.inTune else palette.primaryInk
+                drawCircle(dot.copy(alpha = 0.18f), 11.dp.toPx(), c)
+                drawCircle(dot, 5.dp.toPx(), c)
             }
         }
     }
