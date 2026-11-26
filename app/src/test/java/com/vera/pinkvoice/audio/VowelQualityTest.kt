@@ -27,7 +27,34 @@ class VowelQualityTest {
 
     // ---------- 元音识别 ----------
 
-        /**
+            /**
+     * **不是语音帧就不该产出共振峰。**
+     *
+     * 这是「F1/F2 乱跳」最隐蔽的一个原因：以前每一帧都跑 LPC，
+     * 环境噪音也被拟合成「看起来很合理」的共振峰
+     * （实测静音段能算出 297/1611、455/1318 这种值），
+     * 于是用户没说话时界面照样在跳数。
+     */
+    @Test
+    fun unvoicedFramesProduceNothing() {
+        val analyzer = VoiceQualityAnalyzer(sampleRate)
+        val sig = synth(145.0, doubleArrayOf(730.0, 1090.0, 2440.0))
+
+        // 先确认有声时确实能出结果
+        analyzer.voiced = true
+        analyzer.process(sig, sig.size)
+        assertTrue("有声时应该能测出共振峰", analyzer.formants.f1 > 0f)
+
+        // 关掉门控 → 什么都不该有
+        analyzer.voiced = false
+        analyzer.process(sig, sig.size)
+        assertEquals("不是语音帧不该有 F1", 0f, analyzer.formants.f1, 0.01f)
+        assertEquals("不是语音帧不该有 F2", 0f, analyzer.formants.f2, 0.01f)
+        assertNull("不是语音帧不该识别出元音", analyzer.recognized)
+        assertEquals("不是语音帧不该计时", 0f, analyzer.holdSeconds, 0.01f)
+    }
+
+/**
      * 合成元音应该能被识别出来。
      *
      * **只断言「认得出是个元音」，不断言认成哪个。**

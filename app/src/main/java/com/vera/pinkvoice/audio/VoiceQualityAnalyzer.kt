@@ -64,6 +64,56 @@ class VoiceQualityAnalyzer(
      */
     private val tracker = FormantTracker()
 
+    /**
+     * 这一帧是不是「有人在出声」。
+     *
+     * ## 为什么必须有这个门控
+     *
+     * 以前是**每一帧都跑 LPC**，完全不管这帧是语音还是环境噪音。
+     * 结果：**静音段也能算出看起来很像元音的共振峰**。
+     *
+     * 实测（用户录音的静音段，纯环境噪音）：
+     * ```
+     * 噪音 → 297/1611   455/1318   399/1300   385/1515
+     * 噪音 → 936/2136   400/1384   474/1342   394/1413
+     * ```
+     * 也就是说用户没说话时，界面照样显示「F1=400 F2=1400」——
+     * 这是「F1/F2 乱跳」最主要的原因之一。
+     *
+     * ## 为什么用 YIN 的判定
+     *
+     * 因为 YIN 已经把语音和噪音分得非常干净。实测五段真人录音：
+     *
+     * | | clarity 中位 | p10 | p90 |
+     * |---|---|---|---|
+     * | 语音段 | 0.73–0.85 | ≥ 0.58 | 0.82–0.94 |
+     * | 环境噪音 | **0.00** | 0.00 | **0.00** |
+     *
+     * 噪音里 YIN 直接报 hz = 0（找不到周期）。所以门控几乎白拿 ——
+     * YIN 本来就在同一份数据上跑，不额外花算力。
+     *
+     * 阈值 0.5：语音段最低的 p10 是 0.58，噪音段是 0，中间一大片余量。
+     *
+     * **默认 true**（放行）：这个类也可能被单独使用（测试、离线分析），
+     * 默认放行不会让它们莫名其妙拿不到数据。
+     * 引擎在每块数据上都会用 YIN 的判定覆盖它。
+     */
+    @Volatile
+    var voiced: Boolean = true
+
+    /**
+     * 连续多少帧被判为语音才真的开始分析。
+     *
+     * 实测即使加了 clarity 门控，噪音段仍有 2–6% 的单帧毛刺
+     * （YIN 偶尔在噪音里找到伪周期且 clarity 还不低）。
+     * 要求连续 2 帧（32 ms）就能挡掉这种孤立误判 ——
+     * 和 [PitchTracker] 的 onsetFrames 是同一个思路。
+     */
+    private val onsetFrames: Int = 2
+
+    /** 连续语音帧计数。 */
+    private var voicedRun: Int = 0
+
     /** 训练进度：连续保持在目标区里多久了。 */
     private val targetTracker = TargetTracker()
 
@@ -174,6 +224,23 @@ class VoiceQualityAnalyzer(
      * @param count 有效样本数
      */
     private fun processWindow(samples: FloatArray = buf, count: Int = windowSize) {
+        // 门控：不是语音就根本不分析。
+        // 否则环境噪音会被 LPC 拟合成「看起来很合理」的共振峰，
+        // 用户没说话时界面也在跳数。
+        if (!voiced) {
+            voicedRun = 0
+            tracker.add(0f, 0f)
+            smoother.add(0f, 0f)
+            formants = LpcAnalyzer.Formants(0f, 0f, 0f)
+            recognized = null
+            holdSeconds = 0f
+            validFrames = 0
+            targetTracker.update(false)
+            return
+        }
+        // 起音确认：连续几帧都是语音才开始，挡掉噪音里的孤立误判
+        voicedRun++
+        if (voicedRun < onsetFrames) return
         val ok = lpc.analyze(samples, count)
         val raw = if (ok) lpc.extractFormants() else LpcAnalyzer.Formants(0f, 0f, 0f)
 

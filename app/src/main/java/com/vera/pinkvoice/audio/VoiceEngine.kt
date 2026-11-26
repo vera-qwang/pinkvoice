@@ -736,9 +736,15 @@ class VoiceEngine(
             if (Diagnostics.enabled && quality == null) {
                 quality = VoiceQualityAnalyzer(sampleRate = activeAnalysisRate)
             }
-            quality?.process(floatsAnalysis, m)
 
                 detector.process(floatsAnalysis, m) { hz, clarity, rms ->
+                    // 用 YIN 的判定给共振峰分析做门控：
+                    // 不是语音帧就根本不跑 LPC，否则环境噪音会被
+                    // 拟合成「看起来很合理」的共振峰，界面在没人说话时乱跳。
+                    //
+                    // 阈值 0.5：实测语音段 clarity 中位 0.73–0.85（p10 ≥ 0.58），
+                    // 环境噪音段是 0.00。中间余量很大。
+                    quality?.voiced = hz > 0f && clarity >= 0.5f
                     history.add(captureNs, hz, clarity, rms)
                     if (++frameCount % 32 == 0) {
                         // 诊断日志：原始检测值 vs 跟踪器输出，便于现场调参
@@ -752,6 +758,9 @@ class VoiceEngine(
                     }
                 }
             }
+
+            // 放在 detector 之后：门控用的是**本块**的判定，不是上一块的。
+            quality?.process(floatsAnalysis, m)
 
             if (n == BLOCK_FRAMES) updateLatency(rec, rate, totalRead)
         }
