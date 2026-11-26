@@ -26,8 +26,19 @@ package com.vera.pinkvoice.audio
  * 但**默认不开** —— 监测页（f0 曲线）不需要这些，
  * 只有训练页才打开（debug 版诊断会强制打开）。
  */
-/** LPC 分析速率。见 [Resampler16kTo12k] 的说明。 */
-private const val LPC_RATE = 12000
+/**
+ * LPC 分析速率 —— **11 kHz**，和 Praat 完全一致。
+ *
+ * Praat 源码（fon/Sound_to_Formant.cpp）：
+ * ```cpp
+ * sound = Sound_resample (me, maximumFrequency * 2, 50);   // 5500 × 2 = 11000 Hz
+ * ```
+ *
+ * 分析速率直接决定极点的 Hz 标度，所以差一点点结果就差几十 Hz。
+ * 实测（五段真人录音，对照真 Praat）：11 kHz + 10 阶平均误差 23 Hz，
+ * 而 12 kHz + 10 阶是 471 Hz（/o/ 的 F1/F2 会合并，F2 报成 F3）。
+ */
+private const val LPC_RATE = 11000
 
 class VoiceQualityAnalyzer(
     /** 输入采样率（分析支路的速率）。 */
@@ -42,7 +53,8 @@ class VoiceQualityAnalyzer(
     /** 16 ms 跳，和 YIN 一致，方便时间对齐。 */
     private val hopSize: Int = lpcRate / 62
 
-    private val resampler = Resampler16kTo12k()
+    /** 16 kHz → 11 kHz。 */
+    private val resampler = Resampler16kTo11k()
 
     private val lpc = LpcAnalyzer(sampleRate = lpcRate)
 
@@ -229,8 +241,8 @@ class VoiceQualityAnalyzer(
     fun process(samples: FloatArray, count: Int) {
         if (count <= 0) return
 
-        // ① 16 kHz → 12 kHz。一次处理整块，产出约 3/4 的样本数。
-        val maxOut = count * 3 / 4 + 8
+        // ① 16 kHz → 11 kHz。一次处理整块，产出约 11/16 的样本数。
+        val maxOut = count * 11 / 16 + 8
         if (scratch.size < maxOut) scratch = FloatArray(maxOut * 2)
         val n = resampler.process(samples, count, scratch)
         if (n > 0) {
@@ -241,7 +253,7 @@ class VoiceQualityAnalyzer(
             rateFill += n
         }
 
-        // ② 在 12 kHz 上分帧
+        // ② 在 11 kHz 上分帧
         var consumed = 0
         while (consumed < rateFill) {
             val chunk = minOf(rateFill - consumed, buf.size - fill)

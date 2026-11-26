@@ -143,11 +143,11 @@ class RealRecordingFormantTest {
         val (samples, rate) = readWav(wav)
         require(rate == 48000) { "假定录音是 48 kHz，实际 $rate" }
         val to16 = decimate3(samples)
-        val r = Resampler16kTo12k()
+        val r = Resampler16kTo11k()
         val out = FloatArray(to16.size)
         val n12 = r.process(to16, to16.size, out)
 
-        val lpc = LpcAnalyzer(sampleRate = 12000, order = 11)
+        val lpc = LpcAnalyzer(sampleRate = 11000, order = 10)
         val frame = 600
         lpc.prepare(frame)
         val tracker = FormantTracker()
@@ -166,7 +166,7 @@ class RealRecordingFormantTest {
         val series = ArrayList<Float>()
         var start = 0
         while (start + frame < n12) {
-            val t = start.toDouble() / 12000
+            val t = start.toDouble() / 11000
             if (t >= t0 + m && t <= t1 - m) {
                 if (lpc.analyze(out.copyOfRange(start, start + frame), frame)) {
                     val f = lpc.extractFormants()
@@ -205,11 +205,11 @@ class RealRecordingFormantTest {
 
         // 48 kHz → 12 kHz：先抽取到 16 kHz 再重采样，和 App 一致
         val to16 = decimate3(samples)
-        val r = Resampler16kTo12k()
+        val r = Resampler16kTo11k()
         val out = FloatArray(to16.size)
         val n12 = r.process(to16, to16.size, out)
 
-        val lpc = LpcAnalyzer(sampleRate = 12000, order = 11)
+        val lpc = LpcAnalyzer(sampleRate = 11000, order = 10)
         val frame = 600          // 50 ms @ 12 kHz
         lpc.prepare(frame)
 
@@ -231,7 +231,7 @@ class RealRecordingFormantTest {
         val hop = 192            // 16 ms @ 12 kHz
         var start = 0
         while (start + frame < n12) {
-            val t = start.toDouble() / 12000
+            val t = start.toDouble() / 11000
             if (t in from..to) {
                 if (lpc.analyze(out.copyOfRange(start, start + frame), frame)) {
                     val f = lpc.extractFormants()

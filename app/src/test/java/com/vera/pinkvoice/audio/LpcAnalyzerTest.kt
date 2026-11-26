@@ -21,7 +21,7 @@ import org.junit.Test
 class LpcAnalyzerTest {
 
     /** 分析器按 App 的配置构造（12 kHz / 11 阶）。 */
-    private fun analyzer() = LpcAnalyzer(sampleRate = 12000, order = 11)
+    private fun analyzer() = LpcAnalyzer(sampleRate = 11000, order = 10)
 
     /** 一段简单的有声信号（正弦），只是为了有能量供 LPC 拟合。 */
     private fun tone(freq: Double, n: Int = 2400): FloatArray =

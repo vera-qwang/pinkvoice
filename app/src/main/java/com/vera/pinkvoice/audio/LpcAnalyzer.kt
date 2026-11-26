@@ -33,10 +33,10 @@ private const val SUSPICIOUS_F2_HZ = 2000f
  * | 参数 | 值 | 为什么 |
  * |---|---|---|
  * | 分析采样率 | **12 kHz** | Praat 会重采样到「2 × 共振峰上限」。上限 5 kHz → 10 kHz，实测 11–12 kHz 最好 |
- * | 阶数 | **11** | 实测最优。见下 —— 这个数字很关键，10 和 12 都会崩 |
+ * | 阶数 | **10** | = 2 × 5 个共振峰（Praat 的算法）—— 见下 |
  * | 求法 | **Burg** | Praat 用的就是它。对短数据、共振峰靠近的情况比自相关法稳 |
  * | 窗长 | **50 ms** | Praat 默认 25 ms，但 50 ms 在真人录音上更稳 |
- * | 预加重 | **从 50 Hz 起** | Praat 的默认值。比"固定系数 0.7"温和得多 |
+ * | 预加重 | **从 50 Hz 起**（系数按 48 kHz 算） | Praat 的默认值 |
  * | 带宽过滤 | **不做** | Praat 压根不按带宽选峰 — 见下 |
  *
  * ## 为什么不再按带宽过滤
@@ -59,41 +59,64 @@ private const val SUSPICIOUS_F2_HZ = 2000f
  * | 录音 A（/e/ 类） | F1=324 F2=1469 | F1=420 F2=1453 |
  * | 录音 B（/u/） | F1=309 F2=806 | F1=308 F2=785 |
  *
- * ## 阶数为什么是 11，而不是「2 × 共振峰数」
+ * ## 阶数：10（= 2 × 共振峰数），和 Praat 一致
  *
- * 直觉上 5 个共振峰该用 10 阶。但实测**阶数对结果极其敏感**：
+ * Praat 的 `To Formant (burg)` 用 **2 × nFormants** 阶（默认 5 个共振峰 → 10 阶）。
  *
- * | 阶数 | A | E | I | O | U | 平均 |
- * |---|---|---|---|---|---|---|
- * | 10 | 43 | 37 | 88 | **2231** | 77 | 495 |
- * | **11** | **58** | **21** | **20** | **21** | **52** | **34** |
- * | 12 | **234** | 40 | **1244** | 67 | 8 | 319 |
+ * 阶数对结果**极其敏感** —— 同一条录音上只改阶数：
  *
- * 每个阶数都有自己的崩法：
- * - 10 阶：/o/ 的 F1（500）和 F2（753）靠得近，被**合并成一个极点**（670），
- *   于是 F2 报成 F3
- * - 12 阶：/a/ 和 /i/ 的极点结构变了，F1 跑偏
- * - 11 阶在五个元音上都是 20–58 Hz
+ * | 阶数 | 啊 F1 | 啊 F2 | σ(F1) |
+ * |---|---|---|---|
+ * | 8 | 456 | 1545 | 133 |
+ * | **10** | **417** | **1472** | **43** |
+ * | 11 | 451 | 1488 | 195 |
+ * | 12 | 642 | 1492 | 236 |
+ * | 13 | 826 | 1507 | 77 |
  *
- * 这个敏感性是这个方法本身的弱点，不是调参能消除的。
- * 换元音/说话人时仍可能有偏差 —— App 靠 [VowelZone.isF2Credible]
+ * 10 阶和 Praat 的 419/1454 **只差 2 Hz**，σ 只有 43 Hz；
+ * 11 阶差 32 Hz，σ 是 195（差 4.5 倍），而且一阶之差就崩。
+ *
+ * （曾经用 11 阶。那是在只有两段录音、且分析复刻本身有 bug 的情况下
+ * 选出来的 —— 结论对不上真 Praat。**以真 Praat 为准。**）
+ *
+ * 12 阶以上 F1 会跑到 640–850 —— 多出来的极点把 F1「吸」走了。
+ *
+ * 这个敏感性是这个方法本身的弱点。App 靠 [VowelZone.isF2Credible]
  * 在 F2 明显不对时标「读数不稳」，而不是给用户一个错的值。
  */
 class LpcAnalyzer(
     private val sampleRate: Int = 12000,
-    private val order: Int = 11,
+    private val order: Int = 10,
     /**
      * 预加重的起始频率（Hz）。
      *
-     * Praat 的 "pre-emphasis from 50 Hz"：系数 a = exp(-2π·f0/fs)。
-     * 它是一个**温和**的高通 —— 在 1 kHz 处只衰减约 6 dB，
-     * 但把 50 Hz 附近压掉近 30 dB。
+     * ## 系数按**分析速率**算 —— 这是 Praat 的做法
+     *
+     * Praat 源码（fon/Sound.cpp）：
+     * ```cpp
+     * double Sound_computeEmphasisFactor (constSound me, double cutoffFrequency) {
+     *     return exp (- NUM2pi * cutoffFrequency * my dx);
+     * }
+     * ```
+     * 而 `Sound_to_Formant_any` 是**先重采样再预加重**：
+     * ```cpp
+     * sound = Sound_resample (me, maximumFrequency * 2, 50);   // → 11 kHz
+     * ...
+     * Sound_preEmphasize_inplace (me, preemphasisFrequency);  // dx = 1/11000
+     * ```
+     *
+     * 所以那个 `dx` 是**分析速率**的，不是原始采样率的。
+     * 本分析器在 12 kHz 上跑，系数就按 12 kHz 算：
+     * a = exp(-2π·50/12000) = 0.97416。
+     *
+     * （曾按原始采样率 48 kHz 算过，那是错的 —— Praat 不是那样做的。）
      */
     private val preEmphasisHz: Float = 50f,
 ) {
     /** 预加重系数。 */
     private val preEmphasis: Float =
-        if (preEmphasisHz <= 0f) 0f else exp(-2.0 * PI * preEmphasisHz / sampleRate).toFloat()
+        if (preEmphasisHz <= 0f) 0f
+        else exp(-2.0 * PI * preEmphasisHz / sampleRate).toFloat()
 
     /** LPC 系数。a[0] 恒为 1，a[1..order] 是递推系数。 */
     private val a = FloatArray(order + 1)
@@ -135,13 +158,27 @@ class LpcAnalyzer(
             return false
         }
 
-        // 预加重 + Hamming 窗
+        // 预加重 + **高斯窗**（Praat 用的就是高斯窗，不是 Hamming）
+        //
+        // Praat 源码（fon/Sound_to_Formant.cpp）：
+        // ```cpp
+        // const double imid = 0.5 * (nsamp_window + 1), edge = exp (-12.0);
+        // window [i] = (exp (-48.0 * (i - imid) * (i - imid)
+        //              / (nsamp_window + 1) / (nsamp_window + 1)) - edge) / (1.0 - edge);
+        // ```
+        //
+        // Hamming 的 sidelobe 比高斯窗高，对共振峰提取更不友好。
         var prev = samples[0]
+        val imid = 0.5 * (count + 1)
+        val edge = exp(-12.0)
+        val invEdge = 1.0 / (1.0 - edge)
+        val denom = (count + 1).toDouble() * (count + 1)
         for (i in 0 until count) {
             val x = samples[i]
             val pre = x - preEmphasis * prev
             prev = x
-            val w = 0.54f - 0.46f * cos(2.0 * PI * i / (count - 1)).toFloat()
+            val d = (i + 1) - imid
+            val w = ((exp(-48.0 * d * d / denom) - edge) * invEdge).toFloat()
             work[i] = pre * w
             fwd[i] = work[i]
             bwd[i] = work[i]
