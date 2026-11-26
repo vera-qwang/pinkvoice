@@ -2,35 +2,28 @@ package com.vera.pinkvoice.audio
 
 import kotlin.math.abs
 import kotlin.math.log2
-import kotlin.math.pow
 
 /**
- * 元音的**目标区**：离目标元音多近算「到位」。
+ * 元音的**目标区域**。
  *
- * ## 为什么用音分而不是 Hz
+ * ## 它是什么
  *
- * 两个原因。
+ * 一个以「女性化目标」为中心、覆盖统计范围的**区域**，
+ * 不是「标准元音在图上的那个点」。
  *
- * **听感**：频率是等比关系，1 音分 = 0.58% 的频率差。
- * 同样 100 Hz 的偏差，在 F1=270（/i/）上听着差得多，
- * 在 F2=2290 上几乎听不出来。用 Hz 定容差，对不同的元音
- * 难度完全不一样。
+ * 真实说话人的共振峰散布很宽 —— 同样的女性化程度，
+ * 不同人的 F1/F2 能差上百 Hz。
+ * 所以目标是区域，落在区域里就算达标。
  *
- * **视觉**：元音图上 F2 轴跨 2400 Hz、F1 轴只跨 800 Hz。
- * 同样 150 Hz 的容差，画出来 F2 方向只有 F1 方向的 1/3 宽 ——
- * 目标区变成一条窄缝，用户根本瞄不准。
- * 用音分的话，两个方向占的比例一样，是个正圆。
+ * ## 与「元音身份」是两回事
  *
- * ## 容差取多少
+ * [VowelRecognizer] 回答「你在发哪个元音」（舌位前后高低）。
+ * 这里回答「你的共振峰空间离女性化目标还有多远」。
  *
- * ±120 音分 ≈ ±7%。这是「听起来就是这个元音」和
- * 「听起来是相邻元音」的分界附近。实测 LPC 在干净信号上的
- * 误差是 28 Hz（6 个合成元音平均），远小于这个容差。
+ * 两个问题都要问，但**不能混为一谈** ——
+ * 落到标准元音的点 ≠ 女性化练好了。
  */
 object VowelZone {
-
-    /** 容差（音分）。 */
-    const val TOLERANCE_CENTS = 120f
 
     /**
      * 实际频率相对目标频率偏了多少音分。
@@ -43,29 +36,18 @@ object VowelZone {
     }
 
     /**
-     * 是否在目标区内（两个轴都要满足）。
+     * 是否在目标区域内（两个轴都要满足）。
      */
     fun isInZone(f1: Float, f2: Float, target: VowelTarget): Boolean {
         if (f1 <= 0f || f2 <= 0f) return false
-        return abs(deviationCents(f1, target.f1)) <= TOLERANCE_CENTS &&
-            abs(deviationCents(f2, target.f2)) <= TOLERANCE_CENTS
-    }
-
-    /**
-     * 容差在某个频率上对应的 Hz 半径。
-     *
-     * 元音图上画目标区（椭圆）时用这个换算。
-     */
-    fun radiusHz(hz: Float): Float {
-        if (hz <= 0f) return 0f
-        val up = hz * 2f.pow(TOLERANCE_CENTS / 1200f)
-        return up - hz
+        return abs(f1 - FeminineTarget.centerF1(target)) <= FeminineTarget.radiusF1(target) &&
+            abs(f2 - FeminineTarget.centerF2(target)) <= FeminineTarget.radiusF2(target)
     }
 
     /**
      * 判断可信度时允许的偏差（音分）。
      *
-     * 比容差宽得多 —— 这里问的不是"准不准"，
+     * 比区域容差宽得多 —— 这里问的不是"准不准"，
      * 而是"这个数字是不是 F2"。
      */
     const val CREDIBLE_CENTS = 300f
@@ -84,34 +66,19 @@ object VowelZone {
      *
      * ## 怎么判断
      *
-     * 拿它跟**两个**参照比：
-     * - 目标元音的 F2 —— 用户想发什么
-     * - 识别出的元音的 F2 —— 用户实际上在发什么
+     * 跟**目标元音**的 F2 比 —— 偏差超过 [CREDIBLE_CENTS] 就不是 F2。
      *
-     * 两个都不沾边，就说明这个数字不是 F2。
-     * （元音空间里 F1=724 附近的元音，F2 都在 1000–1900 之间，
-     * 不会有 2400。）
-     *
-     * ## 为什么不能靠频带约束
-     *
-     * 试过「F1 决定了 F2 的范围」这种规则，行不通：
-     * 元音空间里 F1 和 F2 的相关性很弱 ——
-     * /a/ 是 (730, 1090)，/æ/ 是 (660, 1720)，
-     * F1 差不多，F2 差了一倍多。
+     * 曾经也拿「识别出的元音」当第二参照，但那个有漏洞：
+     * 识别结果本身可能就是被坏读数带偏的，两个错误凑巧对上，
+     * 反而把坏读数判成了可信。
      */
     fun isF2Credible(
         measuredF2: Float,
         target: VowelTarget,
-        recognized: VowelTarget?,
     ): Boolean {
         if (measuredF2 <= 0f) return false
-        if (abs(deviationCents(measuredF2, target.f2)) <= CREDIBLE_CENTS) return true
-        if (recognized != null &&
-            abs(deviationCents(measuredF2, recognized.f2)) <= CREDIBLE_CENTS
-        ) {
-            return true
-        }
-        return false
+        val tF2 = FeminineTarget.centerF2(target)
+        return abs(deviationCents(measuredF2, tF2)) <= CREDIBLE_CENTS
     }
 }
 

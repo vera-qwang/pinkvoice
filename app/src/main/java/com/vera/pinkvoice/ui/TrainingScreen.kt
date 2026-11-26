@@ -34,7 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.vera.pinkvoice.audio.FormantNormalizer
+import com.vera.pinkvoice.audio.FeminineTarget
 import com.vera.pinkvoice.audio.VoiceEngine
 import com.vera.pinkvoice.audio.VowelTarget
 import com.vera.pinkvoice.audio.VowelZone
@@ -43,7 +43,7 @@ import com.vera.pinkvoice.audio.VowelZone
 private const val HOLD_TARGET_SECONDS = 10f
 
 /**
- * 一个方向的偏差（音分）。
+ * 一个方向上的读数：实测值、目标、差多少。
  *
  * 显示「偏高 / 偏低」而不是带正负号的数字 ——
  * 用户要的是「往哪调」。
@@ -51,19 +51,20 @@ private const val HOLD_TARGET_SECONDS = 10f
 @Composable
 private fun DeviationChip(
     label: String,
-    /** 偏差（Hz），正数偏高。 */
-    deltaHz: Float,
-    /** 该频率上的容差半径（Hz）。 */
-    toleranceHz: Float,
+    /** 实测值（Hz）。 */
+    value: Float,
+    /** 目标区域中心（Hz）。 */
+    target: Float,
+    /** 目标区域半径（Hz）。 */
+    radius: Float,
     active: Boolean,
     /** 读数是否可信（不可信时显示「读数不稳」而不是偏差）。 */
     credible: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalVoicePalette.current
-    // 容差按音分算（见 VowelZone），但显示的是 Hz 偏差 ——
-    // 所以判定要换算回去，不能直接拿 Hz 比。
-    val inTol = kotlin.math.abs(deltaHz) <= toleranceHz
+    val delta = value - target
+    val inTol = kotlin.math.abs(delta) <= radius
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
@@ -78,13 +79,13 @@ private fun DeviationChip(
             text = when {
                 !active -> "—"
                 !credible -> "读数不稳"
-                inTol -> "✓ 正好"
+                inTol -> "✓ 达标"
                 // 差太远时别显示一长串数字 —— 截断掉，
                 // 用户关心的是方向，不是精确数值。
-                deltaHz > 999f -> "偏高 >999"
-                deltaHz < -999f -> "偏低 >999"
-                deltaHz > 0 -> "偏高 ${deltaHz.toInt()}"
-                else -> "偏低 ${(-deltaHz).toInt()}"
+                delta > 999f -> "偏高 >999"
+                delta < -999f -> "偏低 >999"
+                delta > 0 -> "偏高 ${delta.toInt()}"
+                else -> "偏低 ${(-delta).toInt()}"
             },
             fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold,
@@ -122,14 +123,9 @@ fun FormantContent(
     // 轨迹：最近 ~3 秒的位置
     val trail = remember { mutableStateListOf<Pair<Float, Float>>() }
 
-    // 分轴偏差（Hz）—— 正数偏高，负数偏低。
-    //
-    // 显示用 Hz，判定用音分（[VowelZone]）：
-    // 音分对**算法**合理（频率是等比关系，每个元音难度一样），
-    // 但对**用户**没有直觉 —— "偏低 2213 音分"没人看得懂，
-    // "低了 527 Hz"才能想象出该往哪调。
-    val devF1 = quality.formants.f1 - target.f1
-    val devF2 = quality.formants.f2 - target.f2
+    // 整体前移进度（相对参考值）
+    val shiftF1 = FeminineTarget.shiftPercentF1(quality.formants.f1, target)
+    val shiftF2 = FeminineTarget.shiftPercentF2(quality.formants.f2, target)
     // 保持进度
     val holdProgress = (quality.holdSeconds / HOLD_TARGET_SECONDS).coerceIn(0f, 1f)
 
@@ -139,15 +135,18 @@ fun FormantContent(
     // 与其报一个错的值，不如说「读数不稳」——
     // 训练时更怕的是照着一个错的数字练。
     val f2Credible = quality.valid &&
-        VowelZone.isF2Credible(quality.formants.f2, target, quality.recognized)
+        VowelZone.isF2Credible(quality.formants.f2, target)
 
     // 是否在目标区里。
     //
     // F2 读数不可信时**只用 F1 判定** —— F1 在低频区，
     // 反而是信号差的时候最靠得住的那个。
     val inZone = quality.valid &&
-        kotlin.math.abs(devF1) <= VowelZone.radiusHz(target.f1) &&
-        (!f2Credible || kotlin.math.abs(devF2) <= VowelZone.radiusHz(target.f2))
+        kotlin.math.abs(quality.formants.f1 - FeminineTarget.centerF1(target)) <=
+            FeminineTarget.radiusF1(target) &&
+        (!f2Credible ||
+            kotlin.math.abs(quality.formants.f2 - FeminineTarget.centerF2(target)) <=
+                FeminineTarget.radiusF2(target))
 
 
     // 只在训练页打开时才跑 LPC（监测页不需要）
@@ -177,15 +176,21 @@ fun FormantContent(
             .padding(top = 10.dp, bottom = 8.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // ---------------- 声道长度 ----------------
+        // ---------------- 目标说明 ----------------
         //
-        // 折算到标准声道长度是元音图能跨人比较的前提，
-        // 所以一直显示着——用户能看到自己的基准值。
+        // 这一行是整个页面的**目标**。
+        //
+        // 之前这里写的是「声道 17.5 cm（折算到…）」——
+        // 那是背后的科学工具，初学者完全看不懂，
+        // 更不知道该拿它怎么办。
+        //
+        // 训练目标其实只有一句话：**把共振峰空间整体往前、往上抬**，
+        // 同时保持元音仍然可辨认。
         Text(
-            text = "声道 ${"%.1f".format(FormantNormalizer.userLengthCm)} cm" +
-                "（折算到 17.5 cm 标准，元音图才能跨人比较）",
-            fontSize = 11.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            text = "目标：把共振峰空间往前、往上抬，同时保持元音可辨认",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onBackground,
         )
 
         // ---------------- 目标元音 ----------------
@@ -227,13 +232,14 @@ fun FormantContent(
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     Text(
-                        text = "持续发「${target.label}」，把点保持在圈里",
+                        text = "发「${target.label}」，把点移进目标区",
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onBackground,
                     )
                     Text(
-                        text = "目标 F1 ${target.f1.toInt()} / F2 ${target.f2.toInt()}",
+                        text = "目标 F1 ${FeminineTarget.centerF1(target).toInt()}" +
+                            " / F2 ${FeminineTarget.centerF2(target).toInt()}",
                         fontSize = 10.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -251,68 +257,102 @@ fun FormantContent(
                         .weight(1f),
                 )
                 Spacer(Modifier.height(4.dp))
+                // ---- 元音身份（和女性化目标是两回事）----
+                //
+                // 元音图本来的用途是**区分元音身份**（舌位前后高低），
+                // 这一行只回答那个问题。
+                //
+                // 刻意和下面的「共振峰目标」分开显示 ——
+                // 之前两者混在一起，用户会以为
+                // 「落到标准元音的点 = 女性化练好了」，
+                // 或者反过来「点偏了 = 失败」。两个都是错的。
                 Row(
                     modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     Text(
-                        text = if (quality.valid) {
-                            "F1 ${quality.formants.f1.toInt()} Hz"
-                        } else {
-                            "F1 —"
-                        },
-                        fontSize = 11.sp,
-                        color = if (quality.valid) {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        } else {
-                            MaterialTheme.colorScheme.outline
-                        },
+                        text = "元音身份",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        text = if (quality.valid) {
-                            "F2 ${quality.formants.f2.toInt()} Hz"
-                        } else {
-                            "F2 —"
-                        },
-                        fontSize = 11.sp,
-                        color = if (quality.valid) {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        } else {
-                            MaterialTheme.colorScheme.outline
-                        },
-                    )
-                    Text(
-                        text = quality.recognized?.let { "像「${it.label}」" } ?: "—",
-                        fontSize = 11.sp,
-                        color = if (inZone) palette.inTune else palette.trace,
+                        text = quality.recognized?.let { "你在发「${it.label}」" } ?: "—",
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
+                        color = if (quality.recognized == target) {
+                            palette.inTune
+                        } else {
+                            MaterialTheme.colorScheme.onBackground
+                        },
                     )
                 }
 
-                // ---- 偏差：分轴显示 ----
+                // ---- 共振峰：相对目标区域的偏差 ----
                 //
-                // 一个笼统的"距离"没用 —— 用户不知道该往哪调。
-                // 分成 F1 和 F2 两个方向，各自说偏高还是偏低：
-                // F1 高 = 嘴张小了，F2 高 = 舌位靠前了。
+                // 分轴显示：用户要知道该往哪调。
+                // F1 高 = 嘴张小了 / 舌位抬高了；F2 高 = 舌位更靠前。
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     DeviationChip(
                         label = "F1",
-                        deltaHz = devF1,
-                        toleranceHz = VowelZone.radiusHz(target.f1),
+                        value = quality.formants.f1,
+                        target = FeminineTarget.centerF1(target),
+                        radius = FeminineTarget.radiusF1(target),
                         active = quality.valid,
                         modifier = Modifier.weight(1f),
                     )
                     DeviationChip(
                         label = "F2",
-                        deltaHz = devF2,
-                        toleranceHz = VowelZone.radiusHz(target.f2),
+                        value = quality.formants.f2,
+                        target = FeminineTarget.centerF2(target),
+                        radius = FeminineTarget.radiusF2(target),
                         active = quality.valid,
                         // 读数不可信就不显示偏差数字 —— 显示一个错的数字更糟
                         credible = f2Credible,
                         modifier = Modifier.weight(1f),
+                    )
+                }
+
+                // ---- 整体前移进度 ----
+                //
+                // 「整体把共振峰空间往前、往上抬」是这个页面的真正目标，
+                // 所以要有一个总览：相对参考值前移了多少，目标是多少。
+                Text(
+                    text = if (quality.valid) {
+                        "共振峰前移　F1 ${shiftF1.toInt()}%" +
+                            "　F2 ${shiftF2.toInt()}%" +
+                            "　（目标 +${((FeminineTarget.F1_SHIFT - 1f) * 100).toInt()}%" +
+                            " / +${((FeminineTarget.F2_SHIFT - 1f) * 100).toInt()}%）"
+                    } else {
+                        "共振峰前移 —"
+                    },
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                // ---- 方向提示 ----
+                // 差得最多的那个方向，先动它。
+                //
+                // F2 读数不可信时不拿它做提示 ——
+                // 那是个错的数字，照它调整只会越练越偏。
+                val hint = if (quality.valid) {
+                    FeminineTarget.hint(
+                        quality.formants.f1,
+                        if (f2Credible) quality.formants.f2 else FeminineTarget.centerF2(target),
+                        target,
+                    )
+                } else {
+                    null
+                }
+                if (hint != null) {
+                    Text(
+                        text = "再调一点：$hint",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = palette.nearTune,
                     )
                 }
 

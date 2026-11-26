@@ -21,8 +21,8 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.vera.pinkvoice.audio.FeminineTarget
 import com.vera.pinkvoice.audio.VowelTarget
-import com.vera.pinkvoice.audio.VowelZone
 import kotlin.math.roundToInt
 
 /**
@@ -73,8 +73,11 @@ fun VowelChart(
             val h = size.height - padT - padB
             if (w <= 0f || h <= 0f) return@Canvas
 
-            // F1 纵向范围 200–1000，F2 横向范围 600–3000
-            fun xOf(f2Hz: Float) = padL + (f2Hz - 600f) / (3000f - 600f) * w
+            // F1 纵向范围 200–1000，F2 横向范围 600–3200
+            //
+            // F2 上限取 3200 而不是 3000：/i/ 的女性化目标中心在 2748，
+            // 区域半径 330 —— 画到 3000 的话会有一半在图外。
+            fun xOf(f2Hz: Float) = padL + (f2Hz - 600f) / (3200f - 600f) * w
             fun yOf(f1Hz: Float) = padT + (1000f - f1Hz) / (1000f - 200f) * h
 
             // 网格：F1 500 / 1000，F2 1000 / 2000
@@ -92,7 +95,7 @@ fun VowelChart(
                     style = labelStyle,
                 )
             }
-            for (g in intArrayOf(1000, 2000)) {
+            for (g in intArrayOf(1000, 2000, 3000)) {
                 val x = xOf(g.toFloat())
                 drawLine(gridColor, Offset(x, padT), Offset(x, padT + h), 1.dp.toPx())
                 drawText(
@@ -110,55 +113,60 @@ fun VowelChart(
                 style = Stroke(1.dp.toPx()),
             )
 
-            // ---------------- 目标：靶心 ----------------
+            // ---------------- 目标区域云 ----------------
             //
-            // 画的是**容差区**（一个正圆），不是目标位置本身 ——
-            // 用户要做的不是「对准那个点」，是「把点保持在圈里」。
+            // 每个元音画一片**区域**，不是画一个点。
             //
-            // 容差用音分（±120 cent ≈ ±7%），所以两个方向上
-            // 占的比例一样，是个正圆而不是一条窄缝。
-            target?.let {
-                val c = Offset(xOf(it.f2), yOf(it.f1))
-                val rF1 = VowelZone.radiusHz(it.f1)
-                val rF2 = VowelZone.radiusHz(it.f2)
-                val ry = (rF1 / (1000f - 200f) * h).coerceAtLeast(6.dp.toPx())
-                val rx = (rF2 / (3000f - 600f) * w).coerceAtLeast(6.dp.toPx())
-                val zoneColor = if (inZone) palette.inTune else palette.trace
-                // 容差区：淡填充 + 描边
-                drawOval(
-                    color = zoneColor.copy(alpha = if (inZone) 0.22f else 0.10f),
-                    topLeft = Offset(c.x - rx, c.y - ry),
-                    size = Size(rx * 2, ry * 2),
-                )
-                drawOval(
-                    color = zoneColor.copy(alpha = if (inZone) 0.95f else 0.6f),
-                    topLeft = Offset(c.x - rx, c.y - ry),
-                    size = Size(rx * 2, ry * 2),
-                    style = Stroke(2.dp.toPx()),
-                )
-                // 中心：目标位置
-                drawCircle(zoneColor, 3.dp.toPx(), c)
-            }
-
-            // 目标元音的灰色小点（所有可选元音）
+            // 目标是统计范围 —— 真实说话人的共振峰散布很宽，
+            // 落在区域里就算达标，不必非对着中心点。
+            //
+            // 区域半径两个轴用**同一个百分比**（见 FeminineTarget.SPREAD），
+            // 所以在图上是个正圆。元音图两个轴的跨度差 3 倍，
+            // 用同样的 Hz 半径会画成一条窄缝，根本瞄不准。
             for (v in VowelTarget.entries) {
-                val c = Offset(xOf(v.f2), yOf(v.f1))
                 val isTarget = v == target
                 val isRecognized = v == recognized
-                drawCircle(
-                    color = when {
-                        isTarget -> palette.trace
-                        isRecognized -> palette.primaryInk
-                        else -> palette.axisLabel.copy(alpha = 0.45f)
-                    },
-                    radius = if (isTarget) 4.5.dp.toPx() else 3.5.dp.toPx(),
-                    center = c,
+                val c = Offset(xOf(FeminineTarget.centerF2(v)), yOf(FeminineTarget.centerF1(v)))
+                val ry = (FeminineTarget.radiusF1(v) / (1000f - 200f) * h)
+                    .coerceAtLeast(5.dp.toPx())
+                val rx = (FeminineTarget.radiusF2(v) / (3200f - 600f) * w)
+                    .coerceAtLeast(5.dp.toPx())
+                val tint = when {
+                    isTarget -> palette.trace
+                    isRecognized -> palette.primaryInk
+                    else -> palette.axisLabel
+                }
+                // 区域填充
+                drawOval(
+                    color = tint.copy(alpha = if (isTarget) 0.14f else 0.05f),
+                    topLeft = Offset(c.x - rx, c.y - ry),
+                    size = Size(rx * 2, ry * 2),
                 )
+                // 区域描边
+                drawOval(
+                    color = tint.copy(alpha = if (isTarget) 0.85f else 0.30f),
+                    topLeft = Offset(c.x - rx, c.y - ry),
+                    size = Size(rx * 2, ry * 2),
+                    style = Stroke(if (isTarget) 2.dp.toPx() else 1.dp.toPx()),
+                )
+                // 区域中心
+                drawCircle(tint.copy(alpha = if (isTarget) 1f else 0.5f), 2.5.dp.toPx(), c)
                 // 标签
+                //
+                // 位置要**钳制在画布内** —— drawText 用「画布尺寸 − 文字位置」
+                // 当布局约束，位置越界就会算出负的 maxWidth，直接崩。
+                // （/i/ 的目标区靠右，不钳制必崩。）
+                val labelSize = measurer.measure(
+                    v.label,
+                    TextStyle(fontSize = 10.sp),
+                ).size
+                val labelX = (c.x + rx + 3.dp.toPx())
+                    .coerceAtMost(size.width - labelSize.width - 1.dp.toPx())
+                    .coerceAtLeast(0f)
                 drawText(
                     measurer,
                     v.label,
-                    topLeft = Offset(c.x + 7.dp.toPx(), c.y - 7.dp.toPx()),
+                    topLeft = Offset(labelX, c.y - 6.dp.toPx()),
                     style = TextStyle(
                         fontSize = 10.sp,
                         color = if (isTarget) palette.trace else palette.axisLabel,

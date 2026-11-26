@@ -77,41 +77,103 @@ class VowelTrainingTest {
     // ---------------------------------------------------------------- 目标区
 
     @Test
-    fun zoneUsesCentsNotHertz() {
+    fun zoneIsTheFeminizedTargetArea() {
         val a = VowelTarget.A
-        // 正好在目标上
-        assertTrue(VowelZone.isInZone(a.f1, a.f2, a))
-        // ±100 音分以内 → 在区内（对 F1=730 约 ±42 Hz）
+        // 目标区域中心 = 女性化目标
         assertTrue(
-            "±100 音分应在区内",
-            VowelZone.isInZone(a.f1 * 1.058f, a.f2 * 1.058f, a),
+            "目标中心应在区内",
+            VowelZone.isInZone(
+                FeminineTarget.centerF1(a),
+                FeminineTarget.centerF2(a),
+                a,
+            ),
         )
-        // ±200 音分 → 出区（对 F1=730 约 ±87 Hz）
+        // 区域边缘也在区内
+        assertTrue(
+            "区域边缘应算达标",
+            VowelZone.isInZone(
+                FeminineTarget.centerF1(a) + FeminineTarget.radiusF1(a) - 1f,
+                FeminineTarget.centerF2(a),
+                a,
+            ),
+        )
+        // 超出区域就出区
         assertFalse(
-            "±200 音分应出区",
-            VowelZone.isInZone(a.f1 * 1.13f, a.f2 * 1.13f, a),
+            "超出区域应出区",
+            VowelZone.isInZone(
+                FeminineTarget.centerF1(a) + FeminineTarget.radiusF1(a) + 20f,
+                FeminineTarget.centerF2(a),
+                a,
+            ),
         )
     }
 
     @Test
-    fun zoneIsEquallyHardForEveryVowel() {
-        // 关键性质：容差用音分，所以每个元音的难度一样。
+    fun everyVowelHasTheSameSizedTargetArea() {
+        // 目标区域用**绝对**半径，所以所有元音的区一样大。
         //
-        // 如果用 Hz 容差，/i/ 的 F1=270 和 /a/ 的 F1=730
-        // 能容忍的绝对偏差差 2.7 倍 —— 有的元音很容易，
-        // 有的几乎不可能。
+        // 用百分比的话：/衣/ 的 F1 只有 297 Hz，12% 才 ±36 Hz
+        // （比音分还紧，根本进不去）；/乌/ 的 F2 才 1044 Hz，
+        // 12% 是 ±125 Hz（松得没意义）。
         for (v in VowelTarget.entries) {
-            val tolF1 = VowelZone.radiusHz(v.f1)
-            val tolF2 = VowelZone.radiusHz(v.f2)
-            val pctF1 = tolF1 / v.f1 * 100f
-            val pctF2 = tolF2 / v.f2 * 100f
+            assertEquals(
+                "${v.label} 的 F1 区域半径应一致",
+                FeminineTarget.RADIUS_F1_HZ,
+                FeminineTarget.radiusF1(v),
+                0.01f,
+            )
+            assertEquals(
+                "${v.label} 的 F2 区域半径应一致",
+                FeminineTarget.RADIUS_F2_HZ,
+                FeminineTarget.radiusF2(v),
+                0.01f,
+            )
+        }
+    }
+
+    @Test
+    fun feminineTargetShiftsForwardAndUp() {
+        // 目标 = 参考值 × 系数：F1 往上抬，F2 往前移
+        for (v in VowelTarget.entries) {
             assertTrue(
-                "${v.label} 的 F1 容差占比应约 7%（实际 $pctF1%）",
-                abs(pctF1 - 7f) < 0.5f,
+                "${v.label} 的目标 F1 应该更高（抬）",
+                FeminineTarget.centerF1(v) > v.f1,
             )
             assertTrue(
-                "${v.label} 的 F2 容差占比应约 7%（实际 $pctF2%）",
-                abs(pctF2 - 7f) < 0.5f,
+                "${v.label} 的目标 F2 应该更高（往前）",
+                FeminineTarget.centerF2(v) > v.f2,
+            )
+            assertEquals(
+                "${v.label} 的 F1 系数",
+                1.10f,
+                FeminineTarget.centerF1(v) / v.f1,
+                0.001f,
+            )
+            assertEquals(
+                "${v.label} 的 F2 系数",
+                1.20f,
+                FeminineTarget.centerF2(v) / v.f2,
+                0.001f,
+            )
+        }
+    }
+
+    /**
+     * 女性化之后，主要元音的身份还得认得对。
+     *
+     * 已知限制：/æ/ 和 /哦/ 会漂（见 [VowelRecognizer] 的说明）——
+     * 它们的区别主要在圆唇，不在 F1/F2 上。
+     */
+    @Test
+    fun vowelIdentityStillWorksAtTheFeminizedTarget() {
+        val shouldWork = listOf(VowelTarget.A, VowelTarget.I, VowelTarget.U)
+        for (v in shouldWork) {
+            val f1 = FeminineTarget.centerF1(v)
+            val f2 = FeminineTarget.centerF2(v)
+            val got = VowelRecognizer.recognize(f1, f2).vowel
+            assertTrue(
+                "在目标位置的 ${v.label} 被认成了 $got",
+                got == v,
             )
         }
     }
@@ -209,19 +271,7 @@ class VowelTrainingTest {
         val a = VowelTarget.A
         assertTrue(
             "F2 接近目标就该可信",
-            VowelZone.isF2Credible(a.f2, a, null),
-        )
-    }
-
-    @Test
-    fun f2CredibleWhenItMatchesRecognizedVowel() {
-        val a = VowelTarget.A
-        val eh = VowelTarget.EH
-        // 用户在发「诶」（F2=1840），目标却是「啊」（F2=1090）
-        // 测到的 1840 跟**识别结果**吻合 → 可信
-        assertTrue(
-            "F2 跟识别出的元音吻合就该可信",
-            VowelZone.isF2Credible(eh.f2, a, eh),
+            VowelZone.isF2Credible(FeminineTarget.centerF2(a), a),
         )
     }
 
@@ -231,17 +281,17 @@ class VowelTrainingTest {
         val a = VowelTarget.A
         assertFalse(
             "F3 冒充 F2 时必须判为不可信",
-            VowelZone.isF2Credible(2407f, a, VowelTarget.EH),
+            VowelZone.isF2Credible(2407f, a),
         )
     }
 
     @Test
     fun f2OfVowelIStaysCredible() {
-        // /i/ 的 F2 本来就在 2300 附近，不能被误判成 F3
+        // /i/ 的目标 F2 在 2750 附近，不能被误判成 F3
         val i = VowelTarget.I
         assertTrue(
             "/i/ 的 F2 不该被判为不可信",
-            VowelZone.isF2Credible(2359f, i, i),
+            VowelZone.isF2Credible(FeminineTarget.centerF2(i), i),
         )
     }
 
