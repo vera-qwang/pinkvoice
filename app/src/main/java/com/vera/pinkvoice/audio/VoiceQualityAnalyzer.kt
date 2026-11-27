@@ -188,6 +188,14 @@ class VoiceQualityAnalyzer(
     /** 训练进度：连续保持在目标区里多久了。 */
     private val targetTracker = TargetTracker()
 
+    /**
+     * 目标区判定器（分布式）。
+     *
+     * 用最近 12 帧的中位数 + 在区比例来判断，
+     * 而不是拿单帧读数跟中心点比 —— 见 [ZoneEvaluator]。
+     */
+    private val zoneEvaluator = ZoneEvaluator()
+
     /** 诊断计数（每 16 帧打一次）。 */
     private var diagFrame = 0
 
@@ -233,6 +241,16 @@ class VoiceQualityAnalyzer(
     /** 连续保持在目标区的秒数。 */
     @Volatile
     var holdSeconds: Float = 0f
+        private set
+
+    /**
+     * 现在算不算在目标区里（分布判定）。
+     *
+     * UI 直接读这个 —— 判定只有一处，不会再出现
+     * 「点画成绿色但进度条不涨」这种自相矛盾。
+     */
+    @Volatile
+    var inZone: Boolean = false
         private set
 
     /** 有效帧计数（连续有效帧数，用于"信号稳定了"的判断）。 */
@@ -327,6 +345,7 @@ class VoiceQualityAnalyzer(
         tracker.reset()
         smoother.reset()
         vowelSwitcher.reset()
+        zoneEvaluator.reset()
         // **限速器不清** —— 它有记忆才挡得住「中断后恢复」那一跳。
         //
         // 现场实测：分析失败 ~130ms 后恢复，限速器如果被清零，
@@ -412,21 +431,24 @@ class VoiceQualityAnalyzer(
         recognizedDistance = r.distance
 
         // 训练进度：连续保持在目标区里多久了
+        //
+        // 判定用**分布**（最近 12 帧的中位数 + 在区比例），
+        // 不是拿单帧跟中心点比 —— 起音过渡和偶发坏读数都判不出来。
         val tgt = target
-        holdSeconds = if (tgt != null) {
-            // 和 UI 用**同一个判定函数**，连 F2 可信度豁免都一样。
-            val t = smooth.f1
-            val u = smooth.f2
-            val inZone = VowelZone.isInZone(
-                t,
-                u,
+        zoneEvaluator.setTarget(tgt)
+        if (tgt != null) {
+            val hit = zoneEvaluator.update(
+                smooth.f1,
+                smooth.f2,
                 tgt,
                 f1Credible = true,
-                f2Credible = VowelZone.isF2Credible(u, tgt),
+                f2Credible = VowelZone.isF2Credible(smooth.f2, tgt),
             )
-            targetTracker.update(inZone)
+            inZone = hit
+            holdSeconds = targetTracker.update(hit)
         } else {
-            targetTracker.update(false)
+            inZone = false
+            holdSeconds = targetTracker.update(false)
         }
 
     }
@@ -443,14 +465,18 @@ class VoiceQualityAnalyzer(
         slew.reset()
         vowelSwitcher.reset()
         targetTracker.reset()
+        zoneEvaluator.reset()
         holdSeconds = 0f
+        inZone = false
     }
 
     /** 换训练目标：清掉之前的保持进度。 */
     fun selectTarget(v: VowelTarget?) {
         target = v
         targetTracker.reset()
+        zoneEvaluator.setTarget(v)
         holdSeconds = 0f
+        inZone = false
     }
 
 }

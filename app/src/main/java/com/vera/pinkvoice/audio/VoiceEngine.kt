@@ -901,6 +901,7 @@ class VoiceEngine(
             recognizedDistance = q.recognizedDistance,
             valid = q.validFrames > 4,
             holdSeconds = q.holdSeconds,
+            inZone = q.inZone,
         )
     }
 

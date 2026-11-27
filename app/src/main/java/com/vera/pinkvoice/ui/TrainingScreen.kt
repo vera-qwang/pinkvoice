@@ -139,17 +139,15 @@ fun FormantContent(
 
     // 是否在目标区里。
     //
-    // **必须调同一个函数** —— 之前 UI 和保持计时各判各的：
+    // **直接读分析器的判定结果**，不要自己再算一遍 ——
+    // 之前 UI 和保持计时各判各的：
     // UI 允许「F2 不可信就只看 F1」，计时要求两个都在区。
     // 结果 F2 被判不稳时，点画成绿色「到位了」，
     // 进度条却永远 0.0 秒，自相矛盾。
-    val inZone = quality.valid && VowelZone.isInZone(
-        quality.formants.f1,
-        quality.formants.f2,
-        target,
-        f1Credible = true,
-        f2Credible = f2Credible,
-    )
+    //
+    // 判定用最近 12 帧的中位数 + 在区比例（分布式），
+    // 起音过渡和偶发坏读数都判不出来。
+    val inZone = quality.inZone
 
 
     // 只在训练页打开时才跑 LPC（监测页不需要）

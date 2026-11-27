@@ -169,3 +169,121 @@ class TargetTracker(
         missFrames = 0
     }
 }
+
+/**
+ * 目标区判定器 —— 用**分布**判断，而不是瞬时点。
+ *
+ * ## 为什么不用瞬时点
+ *
+ * 瞬时点比较（`abs(f1 - center) <= radius`）有两个毛病：
+ *
+ * 1. **单帧坏读数就断保持。** 共振峰偶尔会整个消失（被噪声淹没，
+ *    或者带宽超限被过滤掉），这时取到的是 F3，看起来是个合理的数字，
+ *    但完全不对。用户正在稳稳地保持目标区，计时却断了。
+ *
+ * 2. **起音过渡会被误判成「在区内」。** 从静音滑进元音时，
+ *    F1/F2 是连续变化的，中间有几十帧落在目标区里 ——
+ *    瞬时判定会说「已经到位」，但用户其实还没稳定下来。
+ *
+ * ## 改成什么
+ *
+ * 维护最近 N 帧的窗口（默认 12 帧 ≈ 190 ms），用两个条件：
+ *
+ * - **中位数在区内** —— 对单帧坏读数免疫（中位数不受端点影响）
+ * - **在区比例达标** —— 过渡期间虽然有若干帧落进区，
+ *   但比例不够，不会被算成「到位」
+ *
+ * ## 和 [TargetTracker] 的分工
+ *
+ * - [ZoneEvaluator]：**这一帧算不算在区内**（带分布的判断）
+ * - [TargetTracker]：**连续保持了多少秒**（带宽限期）
+ *
+ * 两者都要 —— 分布判断解决「读数不可靠」，宽限期解决「短暂抖动」。
+ */
+class ZoneEvaluator(
+    /** 窗口帧数。12 帧 × 16 ms ≈ 190 ms。 */
+    private val windowFrames: Int = 12,
+    /**
+     * 在区比例要达到多少才算在区内。
+     *
+     * 0.6：窗口里六成在区才算数。
+     * 起音过渡期间虽然有若干帧恰好落在区里，但比例上不去。
+     */
+    private val requiredDwell: Float = 0.6f,
+) {
+    /** 窗口里的每一帧：(在区吗, F1, F2, F2 可信吗)。 */
+    private val hits = ArrayDeque<Boolean>(windowFrames)
+
+    /** 最近一帧的 F1。 */
+    private var lastF1 = 0f
+
+    /** 最近一帧的 F2。 */
+    private var lastF2 = 0f
+
+    /** 最近一帧 F2 可信吗。 */
+    private var lastF2Credible = true
+
+    /**
+     * 送入一帧，更新判定。
+     *
+     * @return 现在算不算在目标区内
+     */
+    fun update(
+        f1: Float,
+        f2: Float,
+        target: VowelTarget,
+        f1Credible: Boolean,
+        f2Credible: Boolean,
+    ): Boolean {
+        lastF1 = f1
+        lastF2 = f2
+        lastF2Credible = f2Credible
+
+        val hit = VowelZone.isInZone(f1, f2, target, f1Credible, f2Credible)
+        if (hits.size >= windowFrames) hits.removeFirst()
+        hits.addLast(hit)
+        return evaluate()
+    }
+
+    /**
+     * 只做分布判断（不再收新帧）。
+     *
+     * 窗口没满时**不判定** —— 几帧的样本说明不了什么。
+     */
+    private fun evaluate(): Boolean {
+        if (hits.size < windowFrames) return false
+        val inCount = hits.count { it }
+        return inCount.toFloat() / windowFrames >= requiredDwell
+    }
+
+    /**
+     * 当前这一帧**单独**看在不在区内。
+     *
+     * UI 画点用这个 —— 点要跟着读数实时动，
+     * 不能等窗口填满才更新。
+     */
+    fun currentHit(): Boolean {
+        val t = currentTarget ?: return false
+        return VowelZone.isInZone(lastF1, lastF2, t, true, lastF2Credible)
+    }
+
+    /** 当前目标（供 [currentHit] 用）。 */
+    var currentTarget: VowelTarget? = null
+        private set
+
+    /** 设置目标。切目标时窗口要清空 —— 旧目标的分布对新目标没意义。 */
+    fun setTarget(t: VowelTarget?) {
+        if (t != currentTarget) {
+            currentTarget = t
+            reset()
+        }
+    }
+
+    /** 清空窗口。 */
+    fun reset() {
+        hits.clear()
+        lastF1 = 0f
+        lastF2 = 0f
+        lastF2Credible = true
+    }
+}
