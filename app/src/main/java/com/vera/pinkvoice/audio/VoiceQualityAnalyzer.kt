@@ -7,20 +7,24 @@ package com.vera.pinkvoice.audio
  *
  * ```
  * 16 kHz（YIN 用的那条分析支路）
- *      ↓ 重采样 3:4
- * 12 kHz  ← LPC 在这上面跑（理由见 [Resampler16kTo12k]）
- *      ↓ 600 点窗（50 ms）/ 192 点跳（16 ms）
+ *      ↓ 重采样 11:16
+ * 11 kHz  ← LPC 在这上面跑（理由见 [Resampler16kTo11k]）
+ *      ↓ 550 点窗（50 ms）/ 177 点跳（16 ms）
  * 共振峰 → 平滑 → 识别 / 目标区判定
  * ```
  *
- * 为什么要多一次重采样：LPC 在 12 kHz 上明显更准 ——
+ * 为什么要多一次重采样：LPC 在 11 kHz 上明显更准 ——
  * 16 kHz 时 F1 的极点会被低频倾斜撑宽、常和邻居合并，
- * 实测对某些元音**整个丢掉 F1**。这套配置是从 Praat 反推出来的。
+ * 实测对某些元音**整个丢掉 F1**。
+ *
+ * 这套配置是**照 Praat 源码**定的，不是反推出来的 ——
+ * 反推（穷举扫描）出来的结论是错的，因为标定用的复刻本身有 bug。
+ * 详见 `docs/vowel-training.md`。
  *
  * ## 性能
  *
  * Burg 10 阶 + 10 个根。每秒约 60 帧。
- * 重采样每输出样本约 12 次乘加。
+ * 重采样每输出样本约 15 次乘加。
  * 整体在手机上仍然很轻。
  *
  * 但**默认不开** —— 监测页（f0 曲线）不需要这些，
@@ -208,7 +212,7 @@ class VoiceQualityAnalyzer(
     private val buf = FloatArray(windowSize + hopSize)
     private var fill = 0
 
-    /** 重采样后的 12 kHz 样本。 */
+    /** 重采样后的 11 kHz 样本。 */
     private var rateBuf = FloatArray(sampleRate * 2)
     private var rateFill = 0
 
