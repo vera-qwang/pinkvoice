@@ -73,12 +73,16 @@ fun VowelChart(
             val h = size.height - padT - padB
             if (w <= 0f || h <= 0f) return@Canvas
 
-            // F1 纵向范围 200–1000，F2 横向范围 600–3200
+            // F1 纵向范围 200–1100，F2 横向范围 600–3200
             //
-            // F2 上限取 3200 而不是 3000：/i/ 的女性化目标中心在 2748，
-            // 区域半径 330 —— 画到 3000 的话会有一半在图外。
+            // 两个上限都是按**目标区域**定的，不是按参考点定的 ——
+            // 画的是区域，区域得完整落在图里。
+            //
+            // - F2 上限 3200：衣的女性化目标中心 2600，区域半径 187
+            // - F1 上限 1100：啊的女性化目标中心 1000，区域半径 72
+            //   （画到 1000 的话，啊的目标区会有一半在图外）
             fun xOf(f2Hz: Float) = padL + (f2Hz - 600f) / (3200f - 600f) * w
-            fun yOf(f1Hz: Float) = padT + (1000f - f1Hz) / (1000f - 200f) * h
+            fun yOf(f1Hz: Float) = padT + (1100f - f1Hz) / (1100f - 200f) * h
 
             // 网格：F1 500 / 1000，F2 1000 / 2000
             //
@@ -145,7 +149,7 @@ fun VowelChart(
                 // 现在两边都来自同一对 Hz 半径，图上的圈就是判定范围本身。
                 // 形状是椭圆 —— 元音图两个轴的跨度差 3 倍多，
                 // 用 Hz 半径画出来必然不是一个正圆，这是坐标轴的固有结果。
-                val ry = (FeminineTarget.radiusF1(v) / (1000f - 200f) * h)
+                val ry = (FeminineTarget.radiusF1(v) / (1100f - 200f) * h)
                     .coerceAtLeast(4.dp.toPx())
                 val rx = (FeminineTarget.radiusF2(v) / (3200f - 600f) * w)
                     .coerceAtLeast(4.dp.toPx())
