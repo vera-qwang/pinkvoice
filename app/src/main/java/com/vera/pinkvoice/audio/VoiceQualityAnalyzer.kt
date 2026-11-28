@@ -200,6 +200,13 @@ class VoiceQualityAnalyzer(
      */
     private val zoneEvaluator = ZoneEvaluator()
 
+    /**
+     * 共振峰历史（给界面画轨迹用）。
+     *
+     * 分析器自己持有，UI 直接读 —— 和引擎里的 [PitchHistory] 一样的模式。
+     */
+    val formantHistory = FormantHistory()
+
     /** 诊断计数（每 16 帧打一次）。 */
     private var diagFrame = 0
 
@@ -274,7 +281,7 @@ class VoiceQualityAnalyzer(
      * @param samples 分析支路的样本
      * @param count 有效样本数
      */
-    fun process(samples: FloatArray, count: Int) {
+    fun process(samples: FloatArray, count: Int, blockEndTimeNs: Long = 0L) {
         if (count <= 0) return
 
         // ① 16 kHz → 11 kHz。一次处理整块，产出约 11/16 的样本数。
@@ -309,6 +316,21 @@ class VoiceQualityAnalyzer(
             rateFill -= consumed
         }
 
+        // 本块的帧写进历史。
+        //
+        // 时间戳从**块末尾**倒推：一帧的窗覆盖 [start, start+window)，
+        // 最后一块的最后一帧结束于块的末尾，所以第 k 帧（从后往前数）
+        // 的时刻是 blockEnd − (k+1)×hop。
+        if (blockFrameCount > 0) {
+            val hopNs = hopSize * 1_000_000_000L / lpcRate
+            for (k in 0 until blockFrameCount) {
+                val fromEnd = blockFrameCount - k          // 1 = 最后一帧
+                val t = if (blockEndTimeNs > 0) blockEndTimeNs - fromEnd * hopNs else 0L
+                formantHistory.add(t, blockF1[k], blockF2[k])
+            }
+            blockFrameCount = 0
+        }
+
         // 限速**按数据块**做一次，不是按帧。
         //
         // 一次 process() 里可能连跑好几帧（解码缓冲凑够了一整窗），
@@ -334,6 +356,14 @@ class VoiceQualityAnalyzer(
             )
         }
     }
+
+    /**
+     * 本块产生的帧（等整块处理完再写进历史，时间戳才对得准）。
+     */
+    private val blockF1 = FloatArray(64)
+    private val blockF2 = FloatArray(64)
+    private var blockFrameCount = 0
+
 
     /**
      * 一帧拿不到共振峰：短暂中断就**保持原状**，断够久才清空。
@@ -427,6 +457,13 @@ class VoiceQualityAnalyzer(
         val tracked = tracker.add(raw.f1, raw.f2)
         val smooth = smoother.add(tracked.f1, tracked.f2)
         formants = LpcAnalyzer.Formants(smooth.f1, smooth.f2, raw.f3)
+
+        // 记下这一帧，等整块处理完再带时间戳写进历史
+        if (blockFrameCount < blockF1.size) {
+            blockF1[blockFrameCount] = smooth.f1
+            blockF2[blockFrameCount] = smooth.f2
+            blockFrameCount++
+        }
 
         // 元音识别（用平滑后的值，避免结果闪变）
         val r = VowelRecognizer.recognize(smooth.f1, smooth.f2)

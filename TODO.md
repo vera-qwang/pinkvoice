@@ -363,6 +363,8 @@ YIN 的八度误判（f0 报成 f0/2 或 2×f0）会连续好几帧，
 - [ ] 仓库描述与 topics（文案在 `.github/repo-metadata.md`）
 - [ ] 设置 Issues / Discussions 标签
 - [ ] README 的中英双语切换（当前只有中文）
+- [ ] **README 截图重拍** —— F1/F2 页从元音图改成轨迹图了，
+      `docs/screenshots/formants.png` 还是老的元音图
 - [ ] 确认 `debug.keystore` 是否保留在仓库里
       （目前**保留**——CI 需要它，且它是标准 androiddebugkey，无生产风险；
       已在 CONTRIBUTING 里说明）

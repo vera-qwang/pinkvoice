@@ -140,6 +140,17 @@ class VoiceEngine(
     /** 供 UI 绘制的音高历史（引擎线程写，UI 线程读）。 */
     val history = PitchHistory(capacity = 4096)
 
+    /**
+     * 共振峰历史（F1/F2 轨迹）。
+     *
+     * 由质量分析器写入，这里只是转发一份出去给 UI 读。
+     */
+    val formantHistory: FormantHistory
+        get() = quality?.formantHistory ?: emptyFormantHistory
+
+    /** 质量分析还没建起来时的占位。 */
+    private val emptyFormantHistory = FormantHistory()
+
     private val ring = PcmRingBuffer(RING_BYTES)
 
     /**
@@ -738,6 +749,11 @@ class VoiceEngine(
                 quality = VoiceQualityAnalyzer(sampleRate = activeAnalysisRate)
             }
 
+                // 质量分析放在 detector 之后：门控用的是**本块**的判定，
+                // 不是上一块的。
+                //
+                // captureNs 是本块最后一个样本的采集时刻 ——
+                // 共振峰历史用它给每一帧打时间戳（从块末尾倒推）。
                 detector.process(floatsAnalysis, m) { hz, clarity, rms ->
                     // 用 YIN 的判定给共振峰分析做门控：
                     // 不是语音帧就根本不跑 LPC，否则环境噪音会被
@@ -758,10 +774,10 @@ class VoiceEngine(
                         )
                     }
                 }
-            }
 
-            // 放在 detector 之后：门控用的是**本块**的判定，不是上一块的。
-            quality?.process(floatsAnalysis, m)
+                // 放在 detector 之后：门控用的是**本块**的判定，不是上一块的。
+                quality?.process(floatsAnalysis, m, captureNs)
+            }
 
             if (n == BLOCK_FRAMES) updateLatency(rec, rate, totalRead)
         }

@@ -118,10 +118,11 @@ fun FormantContent(
 ) {
     val palette = LocalVoicePalette.current
     val quality by engine.qualityState.collectAsState()
+    val status by engine.status.collectAsState()
+    val running = status is com.vera.pinkvoice.audio.EngineStatus.Running
 
     var target by remember { mutableStateOf(VowelTarget.A) }
     // 轨迹：最近 ~3 秒的位置
-    val trail = remember { mutableStateListOf<Pair<Float, Float>>() }
 
     // 整体前移进度（相对参考值）
     val shiftF1 = FeminineTarget.shiftPercentF1(quality.formants.f1, target)
@@ -162,14 +163,6 @@ fun FormantContent(
     DisposableEffect(Unit) {
         onDispose { engine.setVowelTarget(null) }
     }
-    // 轨迹维护：跟着 quality 走
-    LaunchedEffect(quality.formants.f1, quality.formants.f2) {
-        if (quality.valid && quality.formants.f1 > 0f) {
-            trail.add(quality.formants.f1 to quality.formants.f2)
-            while (trail.size > 90) trail.removeAt(0)
-        }
-    }
-
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -213,7 +206,7 @@ fun FormantContent(
             }
         }
 
-        // ---------------- 元音图 ----------------
+        // ---------------- 共振峰轨迹 ----------------
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -233,7 +226,7 @@ fun FormantContent(
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     Text(
-                        text = "发「${target.label}」，把点移进目标区",
+                        text = "发「${target.label}」，把曲线移进目标带",
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onBackground,
@@ -246,13 +239,13 @@ fun FormantContent(
                     )
                 }
                 Spacer(Modifier.height(2.dp))
-                VowelChart(
+                FormantTrace(
+                    history = engine.formantHistory,
                     f1 = quality.formants.f1,
                     f2 = quality.formants.f2,
-                    trail = trail.toList(),
-                    recognized = quality.recognized,
                     target = target,
                     inZone = inZone,
+                    active = running,
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f),
