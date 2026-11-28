@@ -325,8 +325,8 @@ fun FormantContent(
                     text = if (quality.valid) {
                         "共振峰前移　F1 ${shiftF1.toInt()}%" +
                             "　F2 ${shiftF2.toInt()}%" +
-                            "　（目标 +${((FeminineTarget.F1_SHIFT - 1f) * 100).toInt()}%" +
-                            " / +${((FeminineTarget.F2_SHIFT - 1f) * 100).toInt()}%）"
+                            "　（目标 +${((target.femaleF1Ratio - 1f) * 100).toInt()}%" +
+                            " / +${((target.femaleF2Ratio - 1f) * 100).toInt()}%）"
                     } else {
                         "共振峰前移 —"
                     },

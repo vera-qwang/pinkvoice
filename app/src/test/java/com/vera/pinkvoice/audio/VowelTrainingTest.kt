@@ -170,16 +170,17 @@ class VowelTrainingTest {
                 "${v.label} 的目标 F2 应该更高（往前）",
                 FeminineTarget.centerF2(v) > v.f2,
             )
-            // Fant (1966) / Hillenbrand & Clark (2009)：男→女 F1 +18%、F2 +17%
+            // 系数是**逐元音**的（吴宗济普通话表的男/女配对），
+            // 不是全局常数 —— 之前用的全局 1.18/1.17 来自英语文献。
             assertEquals(
                 "${v.label} 的 F1 系数",
-                1.18f,
+                v.femaleF1Ratio,
                 FeminineTarget.centerF1(v) / v.f1,
                 0.001f,
             )
             assertEquals(
                 "${v.label} 的 F2 系数",
-                1.17f,
+                v.femaleF2Ratio,
                 FeminineTarget.centerF2(v) / v.f2,
                 0.001f,
             )
@@ -187,20 +188,40 @@ class VowelTrainingTest {
     }
 
     /**
-     * 女性化之后，主要元音的身份还得认得对。
+     * 女性化之后，元音的身份还得认得对。
      *
-     * 已知限制：/æ/ 和 /哦/ 会漂（见 [VowelRecognizer] 的说明）——
-     * 它们的区别主要在圆唇，不在 F1/F2 上。
+     * 这是**必须有**的：用户练到目标位置时，界面上的「元音身份」
+     * 不能变成邻居 —— 那会让用户以为自己练错了。
+     *
+     * 只用男性参考位置的话，普通话 6 个元音里有 4 个会认错
+     * （目标位置落在下一个元音的自然格里）。
+     * [VowelRecognizer] 的门限做法解决这个 —— 见那里的说明。
      */
     @Test
     fun vowelIdentityStillWorksAtTheFeminizedTarget() {
-        val shouldWork = listOf(VowelTarget.A, VowelTarget.I, VowelTarget.U)
-        for (v in shouldWork) {
+        for (v in VowelTarget.entries) {
             val f1 = FeminineTarget.centerF1(v)
             val f2 = FeminineTarget.centerF2(v)
             val got = VowelRecognizer.recognize(f1, f2).vowel
             assertTrue(
                 "在目标位置的 ${v.label} 被认成了 $got",
+                got == v,
+            )
+        }
+    }
+
+    /**
+     * 自然位置上的识别不能被「目标位置」抢走。
+     *
+     * 女性化目标点落在元音空间中间，如果无条件参与比对，
+     * 会把本该属于别人的读数吸过去。
+     */
+    @Test
+    fun naturalPositionsStillRecognizeCorrectly() {
+        for (v in VowelTarget.entries) {
+            val got = VowelRecognizer.recognize(v.f1, v.f2).vowel
+            assertTrue(
+                "在自然位置的 ${v.label} 被认成了 $got",
                 got == v,
             )
         }
