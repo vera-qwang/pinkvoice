@@ -161,6 +161,27 @@ class VoiceEngine(
     private val audioRecorder = AudioMemoryRecorder(MAX_RECORD_SECONDS * 48_000 * 2)
 
     /**
+     * 诊断专用的**原始**录音环形缓冲。
+     *
+     * [audioRecorder] 存的是**降噪之后**的信号 —— 那是为了让回放听起来
+     * 和实时返听一致。但诊断要拿音频去和参照工具对照，
+     * 而**分析器用的是原始信号**（门控只作用于返听通路）。
+     * 两边不一致的话，对照的是两回事。
+     *
+     * 实际踩过的坑：环境安静时麦克风电平只有 rms 0.0017，
+     * 低于降噪门限（-50 dB = 0.00316），整段被滤成静音 ——
+     * dump 出来一片零，什么都对照不了。
+     *
+     * 所以另开一个环，只在诊断模式开着时写（正式版不占内存）。
+     */
+    private val rawRecorder: AudioMemoryRecorder? =
+        if (Diagnostics.enabled) {
+            AudioMemoryRecorder(MAX_RECORD_SECONDS * 48_000 * 2)
+        } else {
+            null
+        }
+
+    /**
      * 回放缓冲：持有当前正在播放的快照。
      *
      * 状态机（挂快照 → 播 → 结束）全在 [ReplayBuffer] 里，
@@ -671,6 +692,9 @@ class VoiceEngine(
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
 
         val pcm = ShortArray(BLOCK_FRAMES)
+
+        // 诊断环用的字节缓冲（原始 PCM 的字节序）
+        val rawBytes = ByteArray(BLOCK_FRAMES * 2)
         val bytes = ByteArray(BLOCK_FRAMES * 2)
         val floatsFull = FloatArray(BLOCK_FRAMES)
         val floatsMonitor = FloatArray(BLOCK_FRAMES)
@@ -713,6 +737,19 @@ class VoiceEngine(
             //
             // 回放期间**不录**：扬声器模式下播放的声音会被麦克风收进去，
             // 录下来就是自己的回声。而且回放时用户多半在听，不唱。
+            // 诊断环存**原始** PCM —— 和分析器看到的是同一份信号。
+            //
+            // 采集拿到的是 ShortArray（每样本 16 bit），
+            // 内存录音器要的是字节序，所以逐样本拆成高低字节。
+            rawRecorder?.let { rec2 ->
+                for (i in 0 until n) {
+                    val v = pcm[i].toInt()
+                    rawBytes[i * 2] = (v and 0xFF).toByte()
+                    rawBytes[i * 2 + 1] = ((v shr 8) and 0xFF).toByte()
+                }
+                rec2.write(rawBytes, 0, n * 2)
+            }
+
             if (!replay.active) {
                 audioRecorder.write(bytes, 0, n * 2)
             }
@@ -793,8 +830,10 @@ class VoiceEngine(
      * 同一段数据，一份给 Praat、一份给 App，才能分清是
      * 「音频不一样」还是「分析不一样」。
      *
-     * 内存录音器里存的正是 AudioRecord 的原始 PCM，
-     * 所以导出的文件和 Praat 直接读的是同一种东西。
+     * 导出的必须是**原始** PCM —— 分析器看的就是原始信号，
+     * 两边不一致的话对照的是两回事。
+     * 所以另有一个诊断专用的环（[rawRecorder]），
+     * 正式版的回放缓冲存的是降噪后的信号，不拿来做对照。
      *
      * @param file 目标文件
      * @param seconds 取最近多少秒
@@ -802,11 +841,13 @@ class VoiceEngine(
      */
     fun dumpRecentAudio(file: File, seconds: Int = 20): Float {
         if (!running) return 0f
+        // 优先用诊断专用的**原始**环；没有它才退回回放缓冲（降噪后的）
+        val src = rawRecorder ?: audioRecorder
         val bytesPerSecond = activeRate * 2
-        val want = (seconds * bytesPerSecond).coerceAtMost(audioRecorder.availableBytes())
+        val want = (seconds * bytesPerSecond).coerceAtMost(src.availableBytes())
         if (want <= 0) return 0f
         val data = ByteArray(want)
-        val got = audioRecorder.snapshotRecent(data, 0, want)
+        val got = src.snapshotRecent(data, 0, want)
         if (got <= 0) return 0f
 
         file.parentFile?.mkdirs()
