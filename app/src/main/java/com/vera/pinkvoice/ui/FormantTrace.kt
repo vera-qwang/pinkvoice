@@ -22,11 +22,8 @@ import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.vera.pinkvoice.audio.FeminineTarget
 import com.vera.pinkvoice.audio.FormantHistory
-import com.vera.pinkvoice.audio.VowelTarget
 import kotlin.math.ln
-import kotlin.math.pow
 
 /** 轨迹的时间窗口（毫秒）。够看清稳不稳，又不至于挤。 */
 private const val TRACE_WINDOW_MS = 8000L
@@ -37,48 +34,42 @@ private const val TRACE_FRAME_INTERVAL_NS = 50_000_000L
 /**
  * F1/F2 轨迹图。
  *
- * ## 为什么是「时间序列」而不是元音图
- *
- * 之前这一页画的是**元音图**（F1-F2 散点 + 目标区域云）。
- * 那个设计有几个实际问题：
- *
- * 1. **看不出稳不稳。** 训练要练的就是「保持」——
- *    散点图上只有一个点，稳不稳全靠用户盯着数字猜。
- *    波形是一条线，平不平一眼就看出来。
- * 2. **六个目标区域叠在一起是浆糊。** 每个元音一个椭圆，
- *    在窄屏上互相重叠，用户没法判断自己在哪个区域里。
- *    改成「每个轴一条带」就清楚多了。
- * 3. **引入了错误的因果。** 一个点 + 一个黑点，
- *    很容易读成「落在点上=练好了」——
- *    而目标区本来就是一片分布，不是一个点。
- * 4. **和 F0 页的交互模型不一致。** 那边是「横轴=时间」的曲线，
- *    这边是散点，用户要学两套读图方式。
- *
  * ## 画什么
  *
- * - **上下两条带**：F1（上）、F2（下），横轴都是时间
- * - **横向的阴影带**：当前目标元音的目标区（±120 音分）
- * - **曲线**：最近 8 秒的 F1/F2
- * - **右端圆点**：当前值
+ * 上下两条带（F1 上、F2 下），横轴都是时间：
+ *
+ * - **曲线** = 最近 8 秒的 F1/F2
+ * - **右端圆点** = 当前值
+ *
+ * ## 为什么是「时间序列」而不是元音图
+ *
+ * 之前这一页画的是元音图（F1-F2 散点 + 目标区域云）。那个设计有几个实际问题：
+ *
+ * 1. **看不出稳不稳。** 训练要练的就是「保持」——
+ *    散点图上只有一个点，稳不稳全靠盯着数字猜。
+ *    轨迹是一条线，平不平一眼就看出来。
+ * 2. **目标区域叠在一起是浆糊。** 每个元音一个椭圆，
+ *    在窄屏上互相重叠，没法判断自己在哪个区域里。
+ * 3. **引入了错误的因果。** 一个点 + 一个黑点，
+ *    很容易读成「落在点上 = 练好了」——
+ *    而目标区本来就是一片分布，不是一个点。
+ * 4. **和 F0 页的交互模型不一致。** 那边是「横轴 = 时间」的曲线，
+ *    这边是散点，用户要学两套读图方式。
  *
  * ## 纵轴用对数刻度
  *
- * 这样两个轴的**跨度一样宽**（都是 2.6 个八度），
- * 目标带在两条带上**一样高** —— 用户可以直接用眼睛比
- * 「我离带子还差多少」，不用在脑子里换算 Hz。
+ * 两个轴的**跨度一样宽**（都是 2.644 个八度），
+ * 所以同样的频率变化在两条带上看起来一样多 ——
+ * 用户可以直接用眼睛比「F1 和 F2 哪个动得多」。
  */
 @Composable
 fun FormantTrace(
     /** 共振峰历史。 */
     history: FormantHistory,
-    /** 当前目标元音；null 就不画目标带。 */
-    target: VowelTarget?,
     /** 当前显示的 F1（Hz），0 表示没有有效数据。 */
     f1: Float,
     /** 当前显示的 F2（Hz）。 */
     f2: Float,
-    /** 现在是否在目标区内。 */
-    inZone: Boolean,
     /** 引擎是否在运行。停了就不重绘，别白烧 CPU。 */
     active: Boolean = true,
     modifier: Modifier = Modifier,
@@ -141,10 +132,7 @@ fun FormantTrace(
                 minHz = F1_MIN, maxHz = F1_MAX,
                 values = v1, count = n, times = times,
                 startNs = startNs, endNs = endNs,
-                bandCenter = target?.let { FeminineTarget.centerF1(it) },
-                bandRadius = target?.let { FeminineTarget.radiusF1(it) },
                 currentHz = f1,
-                inZone = inZone,
                 palette = palette,
                 measurer = measurer,
             )
@@ -154,10 +142,7 @@ fun FormantTrace(
                 minHz = F2_MIN, maxHz = F2_MAX,
                 values = v2, count = n, times = times,
                 startNs = startNs, endNs = endNs,
-                bandCenter = target?.let { FeminineTarget.centerF2(it) },
-                bandRadius = target?.let { FeminineTarget.radiusF2(it) },
                 currentHz = f2,
-                inZone = inZone,
                 palette = palette,
                 measurer = measurer,
             )
@@ -190,13 +175,17 @@ fun FormantTrace(
     }
 }
 
-/** F1 轴范围（Hz）。 */
+/**
+ * F1 / F2 的轴范围（Hz）。
+ *
+ * 两个轴的跨度**严格相等**（都是 2.644 个八度：
+ * log2(1250/200) = log2(3750/600)），这样同样的频率变化
+ * 在两条带上看起来一样多。
+ */
 private const val F1_MIN = 200f
-private const val F1_MAX = 1214f
-
-/** F2 轴范围（Hz）。和 F1 一样是 2.6 个八度 —— 目标带在两条带上一样高。 */
+private const val F1_MAX = 1250f
 private const val F2_MIN = 600f
-private const val F2_MAX = 3643f
+private const val F2_MAX = 3750f
 
 /**
  * 画一条轨迹带。
@@ -212,10 +201,7 @@ private fun DrawScope.drawStrip(
     times: LongArray,
     startNs: Long,
     endNs: Long,
-    bandCenter: Float?,
-    bandRadius: Float?,
     currentHz: Float,
-    inZone: Boolean,
     palette: VoicePalette,
     measurer: TextMeasurer,
 ) {
@@ -245,53 +231,6 @@ private fun DrawScope.drawStrip(
         topLeft = Offset(left, top),
         size = Size(w, height),
     )
-
-    // ---- 目标带 ----
-    if (bandCenter != null && bandRadius != null && bandCenter > 0f) {
-        val yTop = yOf(bandCenter + bandRadius)
-        val yBot = yOf(bandCenter - bandRadius)
-        val tint = if (inZone) palette.inTune else palette.trace
-        drawRect(
-            color = tint.copy(alpha = if (inZone) 0.22f else 0.12f),
-            topLeft = Offset(left, yTop),
-            size = Size(w, (yBot - yTop).coerceAtLeast(2f)),
-        )
-        // 上下边界
-        drawLine(
-            color = tint.copy(alpha = if (inZone) 0.9f else 0.45f),
-            start = Offset(left, yTop),
-            end = Offset(left + w, yTop),
-            strokeWidth = 1.dp.toPx(),
-        )
-        drawLine(
-            color = tint.copy(alpha = if (inZone) 0.9f else 0.45f),
-            start = Offset(left, yBot),
-            end = Offset(left + w, yBot),
-            strokeWidth = 1.dp.toPx(),
-        )
-        // 中心线（虚线，和 PitchCurve 一个画法）
-        val yMid = yOf(bandCenter)
-        drawLine(
-            color = tint.copy(alpha = 0.5f),
-            start = Offset(left, yMid),
-            end = Offset(left + w, yMid),
-            strokeWidth = 1.dp.toPx(),
-            pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(
-                floatArrayOf(6.dp.toPx(), 5.dp.toPx()),
-            ),
-        )
-        // 目标中心频率标在带的右端
-        drawText(
-            measurer,
-            "${bandCenter.toInt()}",
-            topLeft = Offset(
-                (left + w - measurer.measure("${bandCenter.toInt()}", TextStyle(fontSize = 9.sp)).size.width)
-                    .coerceAtLeast(left),
-                yMid - 6.dp.toPx(),
-            ),
-            style = TextStyle(fontSize = 9.sp, color = tint.copy(alpha = 0.85f)),
-        )
-    }
 
     // ---- 曲线 ----
     if (count >= 2) {
@@ -323,9 +262,8 @@ private fun DrawScope.drawStrip(
     if (currentHz > 0f) {
         val y = yOf(currentHz)
         if (!y.isNaN()) {
-            val dotColor = if (inZone) palette.inTune else palette.primaryInk
-            drawCircle(dotColor.copy(alpha = 0.18f), 9.dp.toPx(), Offset(left + w, y))
-            drawCircle(dotColor, 4.dp.toPx(), Offset(left + w, y))
+            drawCircle(palette.primaryInk.copy(alpha = 0.18f), 9.dp.toPx(), Offset(left + w, y))
+            drawCircle(palette.primaryInk, 4.dp.toPx(), Offset(left + w, y))
         }
     }
 

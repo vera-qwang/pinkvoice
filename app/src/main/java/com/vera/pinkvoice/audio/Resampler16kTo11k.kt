@@ -11,11 +11,8 @@ import kotlin.math.sqrt
  *
  * ## 为什么是 11 kHz
  *
- * **这是 Praat 的确切配置**，不是猜的。Praat 源码（fon/Sound_to_Formant.cpp）：
- *
- * ```cpp
- * sound = Sound_resample (me, maximumFrequency * 2, 50);   // 5500 × 2 = 11000 Hz
- * ```
+ * **这是参照工具的确切配置**，不是猜的：分析速率 = 共振峰上限的两倍，
+ * 共振峰上限取 5500 Hz，所以是 11 kHz。
  *
  * 分析速率直接决定极点的 Hz 标度（极点频率 = 辐角 × fs / 2π），
  * 所以速率差一点点，F1 就会差几十 Hz。

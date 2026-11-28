@@ -124,11 +124,7 @@ class DisplayFlickerTest {
             var frames = 0
             var f2Jumps = 0
             var prevF2 = 0f
-            var switches = 0
-            var lastVowel: VowelTarget? = null
             var unvoicedFrames = 0   // 这些帧在旧实现里都会触发一次清空
-            var recognizedBlanks = 0
-            var hadVowel = false
 
             val win = 1024
             val hop = 256
@@ -164,23 +160,14 @@ class DisplayFlickerTest {
                     prevF2 = 0f
                 }
 
-                val hasVowel = qa.recognized != null
-                if (hadVowel && !hasVowel) recognizedBlanks++
-                hadVowel = hasVowel
-
-                // 元音名来回切换（啊→哦→啊）在界面上同样是「跳」
-                val r = qa.recognized
-                if (r != null && lastVowel != null && r != lastVowel) switches++
-                if (r != null) lastVowel = r
-
                 s += hop
             }
             if (frames < 100) continue
             checked++
             val pct = blanked * 100.0 / frames
             report.append(
-                "%s  语音段 %d 帧：数字变空 %d 次（%s%%），元音名切换 %d 次；F2 跳动 %d 次\n"
-                    .format(wav, frames, blanked, "%.1f".format(pct), switches, f2Jumps),
+                "%s  语音段 %d 帧：数字变空 %d 次（%s%%）；F2 跳动 %d 次\n"
+                    .format(wav, frames, blanked, "%.1f".format(pct), f2Jumps),
             )
             assertTrue(
                 "$wav 说话时显示不稳定（变空 %d 次 / F2 跳 %d 次，共 %d 帧）\n%s"

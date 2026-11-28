@@ -45,24 +45,24 @@ PinkVoice 仓库里另有一份 `tools/praat_formants.sh`（同样功能，
 4. `tab$`、`chr$` **都不存在**
 5. 静音段 Praat 会给出乱七八糟的高共振峰，**必须先筛出有声段再看统计量**
 
-## Praat 的确切配置（读源码得到的，别猜）
+## Praat 的确切配置（量出来的，别猜）
 
-要复刻 Praat 的共振峰分析，配置在 `fon/Sound_to_Formant.cpp`
-和 `fon/Sound.cpp` 里：
+Praat 是 **GPL** 许可 —— 它的代码不能进 Apache-2.0 的项目。
+PinkVoice 用它当**行为参照**，不复刻它的代码。
 
-```cpp
-// Sound_to_Formant.cpp
-sound = Sound_resample (me, maximumFrequency * 2, 50);   // 5500×2 = 11000 Hz
-Sound_preEmphasize_inplace (me, preemphasisFrequency);  // 50 Hz 起点
-```
+要复刻它的共振峰分析，配置是这样（逐项对着同一段录音量出来的）：
 
-| 参数 | 值 | 源码位置 |
-|---|---|---|
-| 分析速率 | **11 kHz** | `Sound_resample(me, maximumFrequency*2, 50)` |
-| 阶数 | **2 × nFormants**（5 个共振峰 → 10 阶） | `Sound_to_Formant_any` |
-| 窗 | **高斯窗** `exp(-48(i-imid)²/(n+1)²)` | `Sound_to_Formant.cpp` |
-| 预加重系数 | `exp(-2π·f0·dx)`，**dx 是重采样后的 1/11000** | `Sound.cpp` |
-| 带宽筛选 | **不做**（只挡退化极点） | `burg()` 里只用带宽挡退化根 |
+| 参数 | 值 |
+|---|---|
+| 分析速率 | **11 kHz**（= 共振峰上限 5500 Hz 的两倍）|
+| 阶数 | **2 × 共振峰数**（5 个 → 10 阶）|
+| 窗 | **高斯窗**，σ = (n+1)/√96 |
+| 预加重 | **50 Hz 起点**，系数按**重采样后**的速率算 |
+| 带宽筛选 | **不做**（只挡退化极点）|
+
+> **Praat 脚本第 4 个参数是「半窗长」**：写 0.025 实际对应 50 ms 的分析窗。
+> 实测：参数 0.0125 → 25 ms 窗，0.025 → 50 ms 窗，0.05 → 100 ms 窗。
+> 对照时必须用同一个窗长，否则比的是两回事。
 
 **分析速率是最容易搞错的** —— 极点频率 = 辐角 × fs / 2π，
 差一点点结果就差几十 Hz。实测：

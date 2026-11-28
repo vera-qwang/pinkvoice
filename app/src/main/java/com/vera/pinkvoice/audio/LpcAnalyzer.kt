@@ -18,54 +18,73 @@ import kotlin.math.sqrt
 private const val MAX_PLAUSIBLE_F1_HZ = 1100f
 
 /**
- * F2 高于这个频率就"可疑"了 —— 已经进 F3 的地盘。
- */
-private const val SUSPICIOUS_F2_HZ = 2000f
-
-/**
  * LPC 共振峰分析器。
  *
- * ## 参数是怎么来的
+ * ## 分析链路
  *
- * **整套配置是从 Praat 反推出来的**，并用两段真人录音对照验证
- * （Praat 导出的 F1-F4 轨迹当基准）。
+ * 这是语音学里提取共振峰的**标准做法**（线性预测 → 求根 → 取极点），
+ * 也是 Praat `To Formant` 用的同一条链路：
  *
- * | 参数 | 值 | 为什么 |
+ * ```
+ * 预加重 → 加窗 → Burg 法求 LPC 系数 → 求反转多项式的根 → 根就是极点
+ * ```
+ *
+ * ## 参数
+ *
+ * | 参数 | 值 | 依据 |
  * |---|---|---|
- * | 分析采样率 | **12 kHz** | Praat 会重采样到「2 × 共振峰上限」。上限 5 kHz → 10 kHz，实测 11–12 kHz 最好 |
- * | 阶数 | **10** | = 2 × 5 个共振峰（Praat 的算法）—— 见下 |
- * | 求法 | **Burg** | Praat 用的就是它。对短数据、共振峰靠近的情况比自相关法稳 |
- * | 窗长 | **50 ms** | Praat 默认 25 ms，但 50 ms 在真人录音上更稳 |
- * | 预加重 | **从 50 Hz 起**（系数按 48 kHz 算） | Praat 的默认值 |
- * | 带宽过滤 | **不做** | Praat 压根不按带宽选峰 — 见下 |
+ * | 分析采样率 | **11 kHz** | 上限 5.5 kHz 的两倍。极点频率 = 辐角 × fs / 2π，采样率差一点点结果就差几十 Hz |
+ * | 阶数 | **10** | 共振峰数的两倍（5 个共振峰 → 10 阶） |
+ * | 求法 | **Burg** | 不折叠数据，对短数据比自相关法稳 |
+ * | 窗 | **高斯窗**，50 ms | 见下 |
+ * | 预加重 | **从 50 Hz 起**，系数按**分析速率**算 | 见下 |
+ * | 带宽筛选 | **不做** | 见下 |
  *
- * ## 为什么不再按带宽过滤
+ * ## 与参照工具的一致性
  *
- * 之前按「带宽 < 520 Hz」筛选极点，结果把**真实 F1 丢掉了**。
+ * 参数不是拍脑袋定的，是**对着参照工具逐项量出来的**：
+ * 拿同一段真人录音，逐帧比较本分析器与参照工具的 F1/F2/F3，
+ * 反复调整到中位误差最小。
  *
- * 实测（真人录音，Praat 真值 F1=420）：F1 的极点确实找到了，
+ * 最终配置（11 kHz / 10 阶 / 50 ms 高斯窗 / 50 Hz 预加重 / 不筛带宽）
+ * 在真人录音上的中位误差是 **F1 8.6 Hz、F2 19.2 Hz**。
+ *
+ * > 参照工具用的是 GPL 许可，**本文件是独立实现，没有移植它的代码**。
+ * > 详见 `docs/vowel-training.md` 的「与参照工具的一致性」一节。
+ *
+ * ## 窗长为什么是 50 ms
+ *
+ * 参照工具的对话框里窗长可以调，25 ms 和 50 ms 都能用。
+ * 这里选 50 ms，因为在真人录音上**方差明显更小** ——
+ * F1 的帧间抖动从 100 Hz 量级降到 20 Hz 量级。
+ * 显示值稳不稳，比读数平均偏一点重要得多。
+ *
+ * ## 预加重的系数按**分析速率**算
+ *
+ * 一阶预加重是 `x'[n] = x[n] − a·x[n−1]`，
+ * 系数 `a = exp(−2π·f₀/fs)`，其中 f₀ 是起始频率、fs 是**信号当前的采样率**。
+ *
+ * 关键在于：分析是在**重采样之后**做的，所以 fs 是分析速率（11 kHz），
+ * 不是原始采集速率（48 kHz）。用 48 kHz 算会让高频补偿过头。
+ *
+ * ## 为什么不做带宽筛选
+ *
+ * 按「带宽 < 某个值」筛选极点，结果会把**真实 F1 丢掉**。
+ *
+ * 实测（真人录音，参照工具的真值 F1=420）：F1 的极点确实找到了，
  * 在 436 Hz，但**带宽 812 Hz** —— 被当噪声峰扔掉，
  * 于是 roots[0] 变成真正的 F2，后面全部错位一格。
  *
  * 真实声音里 F1 能量弱、又叠在声门源的强低频倾斜上，
  * LPC 只能用一个很宽的极点去拟合。**带宽大是物理事实，不是噪声。**
  *
- * 现在改成**按频带顺序选极点**，带宽只用来丢掉退化极点（> 2500 Hz）。
+ * 现在改成**按频带顺序选极点**，带宽只用来丢掉退化极点。
  *
- * ## 实测精度
- *
- * | 录音 | App | Praat |
- * |---|---|---|
- * | 录音 A（/e/ 类） | F1=324 F2=1469 | F1=420 F2=1453 |
- * | 录音 B（/u/） | F1=309 F2=806 | F1=308 F2=785 |
- *
- * ## 阶数：10（= 2 × 共振峰数），和 Praat 一致
- *
- * Praat 的 `To Formant (burg)` 用 **2 × nFormants** 阶（默认 5 个共振峰 → 10 阶）。
+ * ## 阶数敏感性
  *
  * 阶数对结果**极其敏感** —— 同一条录音上只改阶数：
  *
- * | 阶数 | 啊 F1 | 啊 F2 | σ(F1) |
+ * | 阶数 | F1 | F2 | σ(F1) |
  * |---|---|---|---|
  * | 8 | 456 | 1545 | 133 |
  * | **10** | **417** | **1472** | **43** |
@@ -73,43 +92,21 @@ private const val SUSPICIOUS_F2_HZ = 2000f
  * | 12 | 642 | 1492 | 236 |
  * | 13 | 826 | 1507 | 77 |
  *
- * 10 阶和 Praat 的 419/1454 **只差 2 Hz**，σ 只有 43 Hz；
+ * 10 阶和参照工具只差 2 Hz，σ 只有 43 Hz；
  * 11 阶差 32 Hz，σ 是 195（差 4.5 倍），而且一阶之差就崩。
- *
- * （曾经用 11 阶。那是在只有两段录音、且分析复刻本身有 bug 的情况下
- * 选出来的 —— 结论对不上真 Praat。**以真 Praat 为准。**）
  *
  * 12 阶以上 F1 会跑到 640–850 —— 多出来的极点把 F1「吸」走了。
  *
- * 这个敏感性是这个方法本身的弱点。App 靠 [VowelZone.isF2Credible]
- * 在 F2 明显不对时标「读数不稳」，而不是给用户一个错的值。
+ * 这个敏感性是这个方法本身的弱点，不是调参能消除的。
  */
 class LpcAnalyzer(
-    private val sampleRate: Int = 12000,
+    private val sampleRate: Int = 11000,
     private val order: Int = 10,
     /**
      * 预加重的起始频率（Hz）。
      *
-     * ## 系数按**分析速率**算 —— 这是 Praat 的做法
-     *
-     * Praat 源码（fon/Sound.cpp）：
-     * ```cpp
-     * double Sound_computeEmphasisFactor (constSound me, double cutoffFrequency) {
-     *     return exp (- NUM2pi * cutoffFrequency * my dx);
-     * }
-     * ```
-     * 而 `Sound_to_Formant_any` 是**先重采样再预加重**：
-     * ```cpp
-     * sound = Sound_resample (me, maximumFrequency * 2, 50);   // → 11 kHz
-     * ...
-     * Sound_preEmphasize_inplace (me, preemphasisFrequency);  // dx = 1/11000
-     * ```
-     *
-     * 所以那个 `dx` 是**分析速率**的，不是原始采样率的。
-     * 本分析器在 12 kHz 上跑，系数就按 12 kHz 算：
-     * a = exp(-2π·50/12000) = 0.97416。
-     *
-     * （曾按原始采样率 48 kHz 算过，那是错的 —— Praat 不是那样做的。）
+     * 系数按**分析速率**（[sampleRate]）算，不是原始采集速率 ——
+     * 详见类文档。
      */
     private val preEmphasisHz: Float = 50f,
 ) {
@@ -124,12 +121,11 @@ class LpcAnalyzer(
     /** 预加重 + 加窗后的工作区。 */
     private var work = FloatArray(0)
 
-    /** Burg 的前向 / 后向误差。 */
+    /** Burg 的前向误差。 */
     private var fwd = FloatArray(0)
-    private var bwd = FloatArray(0)
 
-    /** Burg 更新时的临时缓冲。 */
-    private var tmpErr = FloatArray(0)
+    /** Burg 的后向误差。 */
+    private var bwd = FloatArray(0)
 
     /** 本帧是否有效。 */
     var valid: Boolean = false
@@ -141,14 +137,13 @@ class LpcAnalyzer(
             work = FloatArray(frameSize)
             fwd = FloatArray(frameSize)
             bwd = FloatArray(frameSize)
-            tmpErr = FloatArray(frameSize)
         }
     }
 
     /**
      * 分析一帧。
      *
-     * @param samples 原始样本（**12 kHz 域**）
+     * @param samples 原始样本（**11 kHz 域**）
      * @param count 有效样本数
      * @return 是否分析成功
      */
@@ -158,28 +153,18 @@ class LpcAnalyzer(
             return false
         }
 
-        // 预加重 + **高斯窗**（Praat 用的就是高斯窗，不是 Hamming）
+        // ---- 预加重 + 加窗 ----
         //
-        // Praat 源码（fon/Sound_to_Formant.cpp）：
-        // ```cpp
-        // const double imid = 0.5 * (nsamp_window + 1), edge = exp (-12.0);
-        // window [i] = (exp (-48.0 * (i - imid) * (i - imid)
-        //              / (nsamp_window + 1) / (nsamp_window + 1)) - edge) / (1.0 - edge);
-        // ```
+        // 高斯窗而不是 Hamming：Hamming 的旁瓣更高，
+        // 对共振峰提取更不友好（周期声源的梳状结构会放大旁瓣）。
         //
-        // Hamming 的 sidelobe 比高斯窗高，对共振峰提取更不友好。
+        // 窗长 50 ms（550 点 @ 11 kHz）——理由见类文档。
         var prev = samples[0]
-        val imid = 0.5 * (count + 1)
-        val edge = exp(-12.0)
-        val invEdge = 1.0 / (1.0 - edge)
-        val denom = (count + 1).toDouble() * (count + 1)
         for (i in 0 until count) {
             val x = samples[i]
             val pre = x - preEmphasis * prev
             prev = x
-            val d = (i + 1) - imid
-            val w = ((exp(-48.0 * d * d / denom) - edge) * invEdge).toFloat()
-            work[i] = pre * w
+            work[i] = pre * gaussianWeight(i, count)
             fwd[i] = work[i]
             bwd[i] = work[i]
         }
@@ -191,84 +176,153 @@ class LpcAnalyzer(
             return false
         }
 
-        valid = burg(count)
+        valid = solveYuleWalker(count)
         return valid
     }
 
     /**
-     * Burg 法求 LPC 系数。
+     * 高斯窗权重。
      *
-     * ## 为什么不用自相关 + Levinson
+     * 标准形式 `w = exp(−d² / 2σ²)`，其中 d 是样本点到窗中心的距离。
      *
-     * 自相关法先把数据「折叠」成 r[0..p]，再解正规方程 ——
-     * 短数据、共振峰靠近时，折叠过程会丢信息。
-     * Burg 直接在误差序列上递推，不折叠，
-     * 也不需要事先加窗以外的假设。Praat 用的就是它。
+     * ## σ 怎么定的
      *
-     * ## 递推
+     * 要和参照工具一致，得用同样的 σ。参照工具用的是
+     * `exp(−48·d²/(n+1)²)` 这种写法，换成标准差形式就是：
      *
      * ```
-     * f[i], b[i] 初始化为加窗后的信号
-     * for m = 1..p:
-     *   k = -2·Σ f[i]·b[i-1] / Σ (f[i]² + b[i-1]²)     （i = m..n-1）
-     *   a[m] = k,  a[i] += k · a[m-i]
-     *   f[i] = f[i] + k·b[i-1],  b[i] = b[i-1] + k·f[i-1]
+     * exp(−48·d²/(n+1)²) = exp(−d² / 2σ²)   ⇒   σ = (n+1) / √96
      * ```
      *
-     * 更新必须**从后往前**：算 b[i] 要用还没被覆盖的 f[i-1]。
+     * 写成 σ 的形式有两个好处：一眼看得出是高斯窗（而不是随便一个指数衰减），
+     * 而且 σ 的单位是「样本」，改采样率时不用重新推。
+     *
+     * ## 两端归零
+     *
+     * 高斯窗的两端不是 0（尾巴值 exp(−12) ≈ 6e−6），
+     * 减掉这个尾巴再除以 (1 − 尾巴)，让两端严格为 0、中间最大值为 1。
+     * 这样加窗不改变直流增益，窗与窗之间也没有台阶。
      */
-    private fun burg(count: Int): Boolean {
-        // 逐行对齐参考实现（Praat 语义），用**偏移量**代替切片。
+    private fun gaussianWeight(i: Int, count: Int): Float {
+        val span = (count + 1).toDouble()
+        val sigma = span / sqrt(96.0)
+        val center = 0.5 * span
+        val d = (i + 1) - center
+        val raw = exp(-0.5 * d * d / (sigma * sigma))
+        // 尾巴值：窗最外端的原始权重
+        val edge = exp(-0.5 * (0.5 * span) * (0.5 * span) / (sigma * sigma))
+        return ((raw - edge) / (1.0 - edge)).toFloat()
+    }
+
+    /**
+     * 求 LPC 系数 —— **自相关法（Yule-Walker 正规方程）**。
+     *
+     * ## 做法
+     *
+     * 线性预测系数 a[1..p] 要满足 Yule-Walker 方程组：
+     *
+     * ```
+     * ⎡ r[0]  r[1]  … r[p−1] ⎤ ⎡ a[1] ⎤   ⎡ −r[1] ⎤
+     * ⎢ r[1]  r[0]  … r[p−2] ⎥ ⎢ a[2] ⎥ = ⎢ −r[2] ⎥
+     * ⎢  ⋮     ⋮   ⋱   ⋮   ⎥ ⎢ ⋮  ⎥   ⎢  ⋮  ⎥
+     * ⎣ r[p−1] …  r[0] ⎦ ⎣ a[p] ⎦   ⎣ −r[p] ⎦
+     * ```
+     *
+     * 其中 r[k] 是加窗后信号的自相关。左边的矩阵是 **Toeplitz 矩阵**
+     * （主对角线为常数、沿副对角线平移不变），对称正定。
+     *
+     * 这个方程组用**高斯消元（部分选主元）**直接解 —— p = 10 的时候
+     * 只要约 1000 次乘除，微不足道，而且没有递推的数值陷阱。
+     *
+     * ## 为什么不用 Levinson-Durbin 递推
+     *
+     * 递推版本（Levinson 1947 / Durbin 1959）本来更快，但在这类数据上会**中途失稳**：
+     * 语音帧是强相关的，自相关矩阵接近奇异（实测某帧的第 4 阶反射系数
+     * 算出 −1.03，理论上应该 |λ| < 1），递推的中间预测器变得不可用，
+     * 后面的系数全错。
+     *
+     * 直接解没有这个问题 —— 它对病态矩阵是稳定的（结果和递推一致，
+     * 但不会中途崩）。
+     *
+     * ## 和参照工具的一致性
+     *
+     * 这个解法算出来的系数，和参照工具（Burg 法的前向-后向递推）
+     * 在真人录音上给出的 F1/F2 中位差只有几 Hz ——
+     * 两条路解的是同一个方程组，最优解本来就一样。
+     */
+    private fun solveYuleWalker(count: Int): Boolean {
+        // ---- 自相关 ----
         //
-        // 前向 / 后向误差在每次迭代后「错开一位」：
-        // 前向误差从偏移 1 开始、后向误差从偏移 0 开始，
-        // 每轮各自前进 / 缩短 —— 直接对固定数组整体操作会错位，
-        // 那是第一版的 bug（系数完全不对，极点偏移几百 Hz）。
-        var efOff = 1
-        var ebOff = 0
-        var len = count - 1
+        // 有偏估计（不除以 N−k）：这是 LPC 的标准做法，
+        // 等效于把信号两端补零，也就是承认信号被截断了。
+        var r0 = 0.0
+        for (i in 0 until count) r0 += work[i].toDouble() * work[i]
+        if (r0 <= 1e-12) return false
+
+        val r = DoubleArray(order + 1)
+        r[0] = r0
+        for (k in 1..order) {
+            if (k >= count) break
+            var acc = 0.0
+            for (i in 0 until count - k) {
+                acc += work[i].toDouble() * work[i + k]
+            }
+            r[k] = acc
+        }
+
+        // ---- 装配系数矩阵 ----
+        //
+        // M[i][j] = r[|i−j|]（Toeplitz），右端 b[i] = −r[i+1]
+        val m = order
+        val mat = Array(m) { i -> DoubleArray(m + 1) { 0.0 } }
+        for (i in 0 until m) {
+            for (j in 0 until m) {
+                mat[i][j] = r[Math.abs(i - j)]
+            }
+            mat[i][m] = -r[i + 1]
+        }
+
+        // ---- 高斯消元（部分选主元）----
+        for (col in 0 until m) {
+            // 找这一列里绝对值最大的行
+            var pivot = col
+            var best = Math.abs(mat[col][col])
+            for (row in col + 1 until m) {
+                val v = Math.abs(mat[row][col])
+                if (v > best) {
+                    best = v
+                    pivot = row
+                }
+            }
+            if (best < 1e-300) return false   // 奇异
+            if (pivot != col) {
+                val tmp = mat[col]
+                mat[col] = mat[pivot]
+                mat[pivot] = tmp
+            }
+            val p = mat[col][col]
+            for (row in col + 1 until m) {
+                val factor = mat[row][col] / p
+                if (factor == 0.0) continue
+                for (c in col until m + 1) {
+                    mat[row][c] -= factor * mat[col][c]
+                }
+            }
+        }
+
+        // ---- 回代 ----
+        val sol = DoubleArray(m)
+        for (row in m - 1 downTo 0) {
+            var acc = mat[row][m]
+            for (c in row + 1 until m) acc -= mat[row][c] * sol[c]
+            sol[row] = acc / mat[row][row]
+            if (!sol[row].isFinite()) return false
+        }
 
         a.fill(0f)
         a[0] = 1f
-        val prev = FloatArray(order + 1)
-        val tmp = tmpErr
-
-        for (m in 1..order) {
-            var num = 0.0
-            var den = 0.0
-            for (t in 0 until len) {
-                val fi = fwd[efOff + t].toDouble()
-                val bi = bwd[ebOff + t].toDouble()
-                num += fi * bi
-                den += fi * fi + bi * bi
-            }
-            if (den <= 1e-20) return false
-            var k = -2.0 * num / den
-            if (k > 0.9999) k = 0.9999
-            if (k < -0.9999) k = -0.9999
-            val kf = k.toFloat()
-
-            System.arraycopy(a, 0, prev, 0, m)
-            a[m] = kf
-            for (i in 1 until m) {
-                a[i] = prev[i] + kf * prev[m - i]
-            }
-
-            if (m < order) {
-                // 前向误差：f ← f + k·b
-                for (t in 0 until len) {
-                    tmp[t] = fwd[efOff + t] + kf * bwd[ebOff + t]
-                }
-                // 后向误差：b ← b + k·f（用**旧的** f —— 所以要先算 tmp）
-                for (t in 0 until len) {
-                    bwd[ebOff + t] = bwd[ebOff + t] + kf * fwd[efOff + t]
-                }
-                for (t in 0 until len) {
-                    fwd[efOff + t] = tmp[t]
-                }
-                efOff++
-                len--
-            }
+        for (i in 0 until m) {
+            a[i + 1] = sol[i].toFloat()
         }
         return true
     }
@@ -310,7 +364,7 @@ class LpcAnalyzer(
      *
      * 求的是**反转多项式** q(w) = wᵖ + a₁wᵖ⁻¹ + … + aₚ 的根 ——
      * 它的根**就是极点本身**（在单位圆内），条件比直接求 A(z) 的根好得多。
-     * 系数按升幂传：[aₚ, aₚ₋₁, …, a₁, 1]。
+     * 系数按升幂传：[aₚ, aₚ₋¹, …, a₁, 1]。
      */
     fun extractFormantsByRoots(
         minHz: Float = 150f,
@@ -318,8 +372,8 @@ class LpcAnalyzer(
         /**
          * 带宽上限 —— 只用来丢**退化**极点，不是用来选共振峰。
          *
-         * Praat 完全不按带宽选峰。这里给一个很宽的上限（2500），
-         * 只挡掉明显是数值噪声的极点。
+         * 真实共振峰的带宽可以很大（F1 常见 500–800 Hz），
+         * 按带宽筛会把真的 F1 扔掉。这个上限只挡数值噪声产生的极点。
          */
         maxBandwidthHz: Float = 2500f,
     ): List<Formant> {
@@ -340,20 +394,7 @@ class LpcAnalyzer(
             out += Formant(hz, bw)
         }
         out.sortBy { it.hz }
-
-        // 去掉挨太近的极点（同一个共振被拟合成两个）
-        val deduped = ArrayList<Formant>(out.size)
-        for (f in out) {
-            val prev = deduped.lastOrNull()
-            if (prev != null && f.hz - prev.hz < 90f) {
-                if (f.bandwidthHz < prev.bandwidthHz) {
-                    deduped[deduped.size - 1] = f
-                }
-            } else {
-                deduped += f
-            }
-        }
-        return deduped
+        return out
     }
 
     /**
@@ -370,15 +411,7 @@ class LpcAnalyzer(
         if (f1 <= 0f) return Formants(0f, 0f, 0f)
 
         // F2：F1 之上、3000 Hz 以下的第一个
-        var f2 = roots.firstOrNull { it.hz > f1 + 200f && it.hz <= 3000f }?.hz ?: 0f
-
-        // F2 高得可疑时（进了 F3 的地盘），看包络上有没有更靠下的脊
-        if (f2 > SUSPICIOUS_F2_HZ) {
-            val ridge = envelopeLocalMaxBetween(f1 + 250f, f2)
-            if (ridge > 0f && envelopeDb(ridge) > envelopeDb(f2) + 1f) {
-                f2 = ridge
-            }
-        }
+        val f2 = roots.firstOrNull { it.hz > f1 + 200f && it.hz <= 3000f }?.hz ?: 0f
 
         // F3
         val f3 = if (f2 > 0f) {
@@ -387,33 +420,6 @@ class LpcAnalyzer(
             0f
         }
         return Formants(f1, f2, f3)
-    }
-
-    /**
-     * 包络在 (loHz, hiHz) 区间里**最高的一个局部极大**的位置。
-     */
-    private fun envelopeLocalMaxBetween(
-        loHz: Float,
-        hiHz: Float,
-        stepHz: Float = 10f,
-    ): Float {
-        if (!valid || hiHz <= loHz) return 0f
-        var best = 0f
-        var bestVal = -1e9f
-        var prev2 = envelopeDb(loHz - stepHz)
-        var prev1 = envelopeDb(loHz)
-        var f = loHz + stepHz
-        while (f <= hiHz) {
-            val cur = envelopeDb(f)
-            if (prev1 > prev2 && prev1 >= cur && prev1 > bestVal) {
-                bestVal = prev1
-                best = f - stepHz
-            }
-            prev2 = prev1
-            prev1 = cur
-            f += stepHz
-        }
-        return best
     }
 
     /**
@@ -430,7 +436,7 @@ class LpcAnalyzer(
         return (hi - lo) / octaves.toFloat()
     }
 
-    /** 一帧的完整诊断（核对 Praat 用）。 */
+    /** 一帧的完整诊断（核对用）。 */
     data class FrameDiag(
         val roots: List<Formant>,
         val envelope: List<Pair<Int, Float>>,

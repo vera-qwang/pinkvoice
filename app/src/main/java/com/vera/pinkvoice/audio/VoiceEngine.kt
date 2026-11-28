@@ -908,28 +908,34 @@ class VoiceEngine(
         }
     }
 
+    /** 上一次发布时有没有有效信号（只用来打 CLEAR 日志）。 */
+    private var wasValid = false
+
     /** 把质量分析的结果发布出去（节流）。 */
     private fun publishQuality() {
         val q = quality ?: return
+        if (Diagnostics.enabled && q.validFrames == 0 && wasValid) {
+            // 只在「从有信号变成没信号」时打一行 ——
+            // 说话中间的换气也会触发，值得看见。
+            Diagnostics.log("CLEAR f1=0 f2=0")
+        }
+        wasValid = q.validFrames > 0
         _qualityState.value = QualityState(
             formants = q.formants,
-            recognized = q.recognized,
-            recognizedDistance = q.recognizedDistance,
-            valid = q.validFrames > 4,
-            holdSeconds = q.holdSeconds,
-            inZone = q.inZone,
+            // 「当前有没有有效读数」—— 直接看 F1。
+            //
+            // 原来用 `validFrames > 4`（**连续**有效帧数），
+            // 判据是「连续稳定了 5 帧」。但 validFrames 在状态被清空时
+            // 归零、恢复后从 1 重新数 —— 刚恢复的那几帧会被判成
+            // 「没声音」。
+            //
+            // 真机实测：说话中间换气 130 ms 就会清空一次，
+            // 于是界面反复显示「还没听到声音」，
+            // 而轨迹图上明明还有曲线 —— **自相矛盾**。
+            //
+            // 现在：状态清空时 f1 就是 0，所以直接看 f1 > 0 就行。
+            valid = q.formants.f1 > 0f,
         )
-    }
-
-    /**
-     * 设置训练目标元音。
-     *
-     * 目标决定了两件事：
-     * - 界面上"离目标多远"的对比
-     * - "连续保持在目标区里多久了"的计时
-     */
-    fun setVowelTarget(v: VowelTarget?) {
-        quality?.selectTarget(v)
     }
 
     private var lastLogNs = 0L

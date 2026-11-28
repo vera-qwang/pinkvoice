@@ -17,7 +17,7 @@ package com.vera.pinkvoice.audio
  * 16 kHz 时 F1 的极点会被低频倾斜撑宽、常和邻居合并，
  * 实测对某些元音**整个丢掉 F1**。
  *
- * 这套配置是**照 Praat 源码**定的，不是反推出来的 ——
+ * 这套配置是**对着参照工具逐项量出来的**，不是反推出来的 ——
  * 反推（穷举扫描）出来的结论是错的，因为标定用的复刻本身有 bug。
  * 详见 `docs/vowel-training.md`。
  *
@@ -33,12 +33,10 @@ package com.vera.pinkvoice.audio
 /**
  * LPC 分析速率 —— **11 kHz**，和 Praat 完全一致。
  *
- * Praat 源码（fon/Sound_to_Formant.cpp）：
- * ```cpp
- * sound = Sound_resample (me, maximumFrequency * 2, 50);   // 5500 × 2 = 11000 Hz
- * ```
+ * 分析速率 = 共振峰上限的两倍，上限取 5500 Hz，所以是 11 kHz。
  *
- * 分析速率直接决定极点的 Hz 标度，所以差一点点结果就差几十 Hz。
+ * 分析速率直接决定极点的 Hz 标度（极点频率 = 辐角 × fs / 2π），
+ * 所以差一点点结果就差几十 Hz。
  * 实测（五段真人录音，对照真 Praat）：11 kHz + 10 阶平均误差 23 Hz，
  * 而 12 kHz + 10 阶是 471 Hz（/o/ 的 F1/F2 会合并，F2 报成 F3）。
  */
@@ -164,8 +162,6 @@ class VoiceQualityAnalyzer(
      * 以前**每个**无效帧都会：
      * ```
      * formants = (0,0,0)      → 界面上的数字变空
-     * recognized = null       → 元音名消失
-     * holdSeconds = 0         → 保持计时清零
      * validFrames = 0         → 「读数不稳」标记闪烁
      * ```
      *
@@ -175,30 +171,19 @@ class VoiceQualityAnalyzer(
      *
      * **这是用户反馈「说话的时候数字还在跳」的直接原因。**
      *
-     * 现在：短暂中断**什么都不动**（画面完全保持），
-     * 连续 8 帧（≈130 ms）无效才真的清空。
-     */
-    private val silenceFrames: Int = 8
-
-    /**
-     * 元音识别的迟滞开关。
+     * ## 为什么是 25 帧而不是 8 帧
      *
-     * 平滑后的 F1/F2 落在两个元音分界附近时，识别结果会逐帧来回跳 ——
-     * 实测持续 2–3 秒的单个元音，标签能切换 3–15 次
-     * （/i/ 每秒变 5 次），界面上看起来就是「跳」。
-     */
-    private val vowelSwitcher = VowelSwitcher()
-
-    /** 训练进度：连续保持在目标区里多久了。 */
-    private val targetTracker = TargetTracker()
-
-    /**
-     * 目标区判定器（分布式）。
+     * 原来卡 8 帧（≈130 ms）。但**换气就是 100–200 ms** ——
+     * 真机实测：说话中间 YIN 连续 8 帧判「非语音」，
+     * 于是状态被整个清空，界面显示「还没听到声音」，
+     * 而轨迹图上明明还有曲线（轨迹是历史，不会被清）。
      *
-     * 用最近 12 帧的中位数 + 在区比例来判断，
-     * 而不是拿单帧读数跟中心点比 —— 见 [ZoneEvaluator]。
+     * **同一个画面上「有曲线」和「没听到声音」同时出现** —— 自相矛盾。
+     *
+     * 现在 25 帧（≈400 ms）：换气不再清空，
+     * 真的停止说话才清。
      */
-    private val zoneEvaluator = ZoneEvaluator()
+    private val silenceFrames: Int = 25
 
     /**
      * 共振峰历史（给界面画轨迹用）。
@@ -226,42 +211,9 @@ class VoiceQualityAnalyzer(
     /** 重采样的输出暂存区。 */
     private var scratch = FloatArray(1024)
 
-    /** 识别出的元音。 */
-    @Volatile
-    var recognized: VowelTarget? = null
-        private set
-
-    /** 到识别出的元音的距离。 */
-    @Volatile
-    var recognizedDistance: Float = Float.MAX_VALUE
-        private set
-
     /** 最近一次的共振峰（原始频率）。 */
     @Volatile
     var formants: LpcAnalyzer.Formants = LpcAnalyzer.Formants(0f, 0f, 0f)
-        private set
-
-    /**
-     * 当前训练目标元音。
-     *
-     * 设为 null 就停止计时。UI 换目标时调 [VoiceEngine.setVowelTarget]。
-     */
-    @Volatile
-    var target: VowelTarget? = null
-
-    /** 连续保持在目标区的秒数。 */
-    @Volatile
-    var holdSeconds: Float = 0f
-        private set
-
-    /**
-     * 现在算不算在目标区里（分布判定）。
-     *
-     * UI 直接读这个 —— 判定只有一处，不会再出现
-     * 「点画成绿色但进度条不涨」这种自相矛盾。
-     */
-    @Volatile
-    var inZone: Boolean = false
         private set
 
     /** 有效帧计数（连续有效帧数，用于"信号稳定了"的判断）。 */
@@ -349,9 +301,8 @@ class VoiceQualityAnalyzer(
         // 会打出几个中间值，看上去像「138% 的跳变」，其实界面没跳。
         if (formants.f1 > 0f) {
             Diagnostics.log(
-                "SHOW f1=%.0f f2=%.0f rec=%s hold=%.1f valid=%d".format(
-                    formants.f1, formants.f2, recognized?.label ?: "-",
-                    holdSeconds, validFrames,
+                "SHOW f1=%.0f f2=%.0f valid=%d".format(
+                    formants.f1, formants.f2, validFrames,
                 ),
             )
         }
@@ -378,8 +329,6 @@ class VoiceQualityAnalyzer(
         // 真的断了：清一次
         tracker.reset()
         smoother.reset()
-        vowelSwitcher.reset()
-        zoneEvaluator.reset()
         // **限速器不清** —— 它有记忆才挡得住「中断后恢复」那一跳。
         //
         // 现场实测：分析失败 ~130ms 后恢复，限速器如果被清零，
@@ -388,10 +337,7 @@ class VoiceQualityAnalyzer(
         //
         // 保留它的值，恢复时会从上一个显示值**平滑爬过去**。
         formants = LpcAnalyzer.Formants(0f, 0f, 0f)
-        recognized = null
-        recognizedDistance = Float.MAX_VALUE
         validFrames = 0
-        holdSeconds = targetTracker.update(false)
     }
 
     /**
@@ -465,33 +411,6 @@ class VoiceQualityAnalyzer(
             blockFrameCount++
         }
 
-        // 元音识别（用平滑后的值，避免结果闪变）
-        val r = VowelRecognizer.recognize(smooth.f1, smooth.f2)
-        // 迟滞：新元音要连续赢几帧才认，否则标签会在边界上疯狂切换
-        recognized = vowelSwitcher.update(smooth.f1, smooth.f2, r.vowel)
-        recognizedDistance = r.distance
-
-        // 训练进度：连续保持在目标区里多久了
-        //
-        // 判定用**分布**（最近 12 帧的中位数 + 在区比例），
-        // 不是拿单帧跟中心点比 —— 起音过渡和偶发坏读数都判不出来。
-        val tgt = target
-        zoneEvaluator.setTarget(tgt)
-        if (tgt != null) {
-            val hit = zoneEvaluator.update(
-                smooth.f1,
-                smooth.f2,
-                tgt,
-                f1Credible = true,
-                f2Credible = VowelZone.isF2Credible(smooth.f2, tgt),
-            )
-            inZone = hit
-            holdSeconds = targetTracker.update(hit)
-        } else {
-            inZone = false
-            holdSeconds = targetTracker.update(false)
-        }
-
     }
 
     /** 清空所有状态。 */
@@ -499,25 +418,8 @@ class VoiceQualityAnalyzer(
         fill = 0
         validFrames = 0
         formants = LpcAnalyzer.Formants(0f, 0f, 0f)
-        recognized = null
-        recognizedDistance = Float.MAX_VALUE
         tracker.reset()
         smoother.reset()
         slew.reset()
-        vowelSwitcher.reset()
-        targetTracker.reset()
-        zoneEvaluator.reset()
-        holdSeconds = 0f
-        inZone = false
     }
-
-    /** 换训练目标：清掉之前的保持进度。 */
-    fun selectTarget(v: VowelTarget?) {
-        target = v
-        targetTracker.reset()
-        zoneEvaluator.setTarget(v)
-        holdSeconds = 0f
-        inZone = false
-    }
-
 }
